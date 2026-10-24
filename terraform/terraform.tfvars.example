@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+aws_region   = "us-east-1"
+owner        = "izzy"
+budget_email = "REPLACE-ME@example.com"
+
+# Your public IP as a /32. The demo ALB is HTTP only, so keep it closed.
+alb_ingress_cidrs = ["203.0.113.10/32"]

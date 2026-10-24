@@ -1,0 +1,178 @@
+name: deploy
+
+# Push to main: terraform apply, then build images, run the Flyway task, and
+# roll the service. Two jobs, two GitHub environments, two IAM roles:
+#   infra    -> terraform role. Owns infrastructure. Cannot run tasks or read
+#               the DB secret.
+#   release  -> deploy role. Pushes images, runs the migration task, updates
+#               the service. Cannot change infrastructure or read the secret.
+#
+# Set both environments to require a reviewer:
+#   Settings > Environments > production-infra / production-app >
+#   Required reviewers, and limit deployment branches to main.
+# Manual-only until the bootstrap stack is applied and the repo variables are
+# set. To turn on automatic deploys, add back:
+#   push:
+#     branches: [main]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false  # never cancel a half-finished apply or migration
+
+env:
+  TF_VERSION: "1.17.0"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  infra:
+    name: terraform apply
+    runs-on: ubuntu-latest
+    environment: production-infra
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
+      TF_VAR_alb_ingress_cidrs: ${{ vars.ALB_INGRESS_CIDRS }}
+    outputs:
+      cluster: ${{ steps.out.outputs.cluster }}
+      service: ${{ steps.out.outputs.service }}
+      app_family: ${{ steps.out.outputs.app_family }}
+      migration_family: ${{ steps.out.outputs.migration_family }}
+      subnets: ${{ steps.out.outputs.subnets }}
+      migration_sg: ${{ steps.out.outputs.migration_sg }}
+      app_repo: ${{ steps.out.outputs.app_repo }}
+      migration_repo: ${{ steps.out.outputs.migration_repo }}
+      migration_log_group: ${{ steps.out.outputs.migration_log_group }}
+      app_url: ${{ steps.out.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+          mask-aws-account-id: false  # outputs below are passed between jobs
+
+      - name: init
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=aurora-fargate-migration-demo/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: plan
+        run: terraform plan -no-color -out=tfplan
+
+      - name: apply
+        run: terraform apply -no-color tfplan
+
+      - name: export outputs
+        id: out
+        run: |
+          {
+            echo "cluster=$(terraform output -raw ecs_cluster_name)"
+            echo "service=$(terraform output -raw app_service_name)"
+            echo "app_family=$(terraform output -raw app_task_family)"
+            echo "migration_family=$(terraform output -raw migration_task_family)"
+            echo "subnets=$(terraform output -raw private_subnet_ids_csv)"
+            echo "migration_sg=$(terraform output -raw migration_security_group_id)"
+            echo "app_repo=$(terraform output -raw app_ecr_repository)"
+            echo "migration_repo=$(terraform output -raw migration_ecr_repository)"
+            echo "migration_log_group=$(terraform output -raw migration_log_group)"
+            echo "app_url=$(terraform output -raw app_url)"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: build, migrate, deploy
+    needs: infra
+    runs-on: ubuntu-latest
+    environment: production-app
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLUSTER: ${{ needs.infra.outputs.cluster }}
+      SERVICE: ${{ needs.infra.outputs.service }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+
+      - name: ECR login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: build and push images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          APP_REPO: ${{ needs.infra.outputs.app_repo }}
+          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
+        run: |
+          push_once() {
+            local repo=$1 dir=$2
+            # Tags are immutable, so a re-run of the same commit reuses the image.
+            if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+              echo "$repo:$TAG already exists, skipping build"
+              return
+            fi
+            docker build --build-arg APP_VERSION="${TAG::7}" -t "$REGISTRY/$repo:$TAG" "$dir"
+            docker push "$REGISTRY/$repo:$TAG"
+          }
+          push_once "$APP_REPO" app
+          push_once "$MIGRATION_REPO" db
+
+      # Step 1 of the release: schema first. Expand-only migrations are safe
+      # for the code that is still running.
+      - name: run Flyway migration task in the private subnets
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
+          MIGRATION_FAMILY: ${{ needs.infra.outputs.migration_family }}
+          SUBNETS: ${{ needs.infra.outputs.subnets }}
+          SECURITY_GROUP: ${{ needs.infra.outputs.migration_sg }}
+          LOG_GROUP: ${{ needs.infra.outputs.migration_log_group }}
+        run: |
+          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$REGISTRY/$MIGRATION_REPO:$TAG")
+          export TASK_DEFINITION
+          bash scripts/run-migration.sh
+
+      # Step 2: only after the migration exited 0, roll out the new code.
+      - name: deploy app
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          APP_REPO: ${{ needs.infra.outputs.app_repo }}
+          APP_FAMILY: ${{ needs.infra.outputs.app_family }}
+          APP_URL: ${{ needs.infra.outputs.app_url }}
+        run: |
+          task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$REGISTRY/$APP_REPO:$TAG")
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$task_def" --desired-count 1 >/dev/null
+          echo "Waiting for $SERVICE to be stable on $task_def"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"

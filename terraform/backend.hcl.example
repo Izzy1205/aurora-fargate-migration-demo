@@ -1,0 +1,8 @@
+# Copy to backend.hcl (gitignored) and fill in, then:
+#   terraform init -backend-config=backend.hcl
+#
+# The bucket is created once by hand, outside this stack, with versioning
+# and default encryption turned on and public access blocked.
+bucket = "REPLACE-ME-tfstate-bucket"
+key    = "aurora-fargate-migration-demo/terraform.tfstate"
+region = "us-east-1"

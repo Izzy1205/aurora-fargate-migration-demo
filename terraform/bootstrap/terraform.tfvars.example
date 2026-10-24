@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+aws_region                  = "us-east-1"
+owner                       = "izzy"
+github_repo                 = "REPLACE-ME-github-user/aurora-fargate-migration-demo"
+state_bucket_name           = "REPLACE-ME-tfstate-bucket"
+create_github_oidc_provider = true
