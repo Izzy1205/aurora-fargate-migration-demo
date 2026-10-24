@@ -112,6 +112,8 @@ releases. Flyway does not read that folder.
 
 ```
 .github/workflows/   pr.yml (checks + read-only plan), deploy.yml (apply, migrate, deploy)
+.github/workflows/   codeql.yml (code scanning on PRs, main and weekly)
+.github/dependabot.yml  weekly version bumps and CVE fixes
 terraform/           main stack (network, database, registry, ecs, budget modules)
 terraform/bootstrap/ GitHub OIDC provider and the three CI roles, applied once by hand
 db/migrations/       Flyway migrations V1 (schema), V2 (seed), V3 (expand)
@@ -355,6 +357,40 @@ purpose:
 `.checkov.yaml` lists each skipped check with the reason. They map to the list
 above.
 
+## Security checks on every PR
+
+Every pull request to `main` runs these before it can merge. None of them need
+AWS access, so they also run safely on PRs from forks.
+
+- **Terraform checks.** `terraform fmt`, `validate` and `tflint`, then a plan
+  with the read-only role, posted as a PR comment.
+- **IaC scan.** Checkov reads the Terraform for insecure settings. Every
+  skipped check is listed with its reason in `.checkov.yaml`.
+- **Secret scan.** Gitleaks reads the full git history, not just the diff.
+- **Python code scan (SAST).** Bandit fails on medium or higher findings in
+  the app code. CodeQL also scans the app and the workflow files, and runs
+  again on `main` and once a week.
+- **Dependency CVEs.** pip-audit checks every pinned Python package against
+  the public advisory databases.
+- **Container image scan.** Trivy builds the app and Flyway images on the
+  runner (nothing is pushed) and fails on any HIGH or CRITICAL CVE that has a
+  fix available. Results also go to the Security tab.
+- **Migration test.** Flyway runs every migration against a throwaway
+  Postgres and checks that the expand step left existing rows alone.
+- **App tests.** pytest, plus a test build of the app image.
+
+The deploy workflow scans both images again with Trivy before anything is
+pushed to ECR. A fixable CRITICAL CVE stops the release, and the images that
+get pushed are the same ones that were scanned.
+
+Dependabot watches the Python pins, both Dockerfiles, the GitHub Actions and
+the Terraform providers. It opens a PR for known CVEs right away, and for
+other updates once a week.
+
+Trivy is pinned to a full commit SHA instead of a tag. Its release tags were
+hijacked in March 2026 to steal CI secrets (GHSA-69fq-xp46-6x23), and a SHA
+can't be moved that way.
+
 ## Checks
 
 Run before every push (CI runs the same):
@@ -367,6 +403,8 @@ checkov --config-file .checkov.yaml
 actionlint
 gitleaks git .
 (cd app && pytest)
+bandit -r app --exclude app/tests,app/.venv --severity-level medium --confidence-level medium
+pip-audit -r app/requirements.txt -r app/requirements-dev.txt
 ```
 
 `.pre-commit-config.yaml` runs gitleaks and `terraform fmt` on commit if you
