@@ -99,9 +99,8 @@ resource "aws_ecs_task_definition" "migration" {
   }])
 }
 
-# The service starts at zero tasks. The pipeline pushes a real image, runs
-# the migration, then registers a new task definition and scales the service
-# up. Terraform owns the service shell; CI owns which revision runs in it.
+# Starts at zero tasks. CI picks the revision and scales it up after the
+# migration, so Terraform ignores those fields.
 resource "aws_ecs_service" "app" {
   name                              = "${var.name_prefix}-app"
   cluster                           = aws_ecs_cluster.this.id

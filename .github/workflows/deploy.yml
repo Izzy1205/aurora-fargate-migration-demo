@@ -1,20 +1,11 @@
 name: deploy
 
-# Push to main: terraform apply, then build images, run the Flyway task, and
-# roll the service. Two jobs, two GitHub environments, two IAM roles:
-#   infra    -> terraform role. Owns infrastructure. Cannot run tasks or read
-#               the DB secret.
-#   release  -> deploy role. Pushes images, runs the migration task, updates
-#               the service. Cannot change infrastructure or read the secret.
-# A third job, scan, builds both images and runs Trivy on them with no AWS
-# access at all. It runs alongside infra. release only starts if the scan
-# passed, and it pushes the exact images that were scanned.
+# infra: terraform apply with the terraform role (production-infra env).
+# scan: builds both images and runs Trivy, no AWS access. Runs alongside infra.
+# release: pushes the scanned images, runs Flyway, rolls the service with the
+#   deploy role (production-app env). Waits for both jobs above.
 #
-# Set both environments to require a reviewer:
-#   Settings > Environments > production-infra / production-app >
-#   Required reviewers, and limit deployment branches to main.
-# Manual-only until the bootstrap stack is applied and the repo variables are
-# set. To turn on automatic deploys, add back:
+# Manual for now. For deploys on every merge add:
 #   push:
 #     branches: [main]
 on:
@@ -106,9 +97,8 @@ jobs:
             echo "app_url=$(terraform output -raw app_url)"
           } >> "$GITHUB_OUTPUT"
 
-  # Build and scan with no AWS credentials and no OIDC token, so a scanner
-  # problem can never reach AWS. A fixable CRITICAL CVE fails here, and then
-  # release never runs and nothing ships.
+  # No credentials or OIDC token here, so a compromised scanner can't reach
+  # AWS. A fixable CRITICAL fails the job and release never runs.
   scan:
     name: build and scan images
     runs-on: ubuntu-latest
@@ -124,8 +114,7 @@ jobs:
           docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-app:$TAG" app
           docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-migrate:$TAG" db
 
-      # Pinned to a full commit SHA (see the note in pr.yml). ignore-unfixed
-      # skips CVEs that have no fixed package yet.
+      # SHA pin, see pr.yml for why.
       - name: scan app image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -180,8 +169,7 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # The images the scan job built and passed. Not rebuilt here, so what
-      # ships is byte for byte what was scanned.
+      # Not rebuilt, so what ships is exactly what was scanned.
       - uses: actions/download-artifact@v8
         with:
           name: images
@@ -206,8 +194,7 @@ jobs:
           push_once "$APP_REPO" demo-app
           push_once "$MIGRATION_REPO" demo-migrate
 
-      # Step 1 of the release: schema first. Expand-only migrations are safe
-      # for the code that is still running.
+      # Schema first. Expand-only, so the old code is fine with it.
       - name: run Flyway migration task in the private subnets
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -221,7 +208,7 @@ jobs:
           export TASK_DEFINITION
           bash scripts/run-migration.sh
 
-      # Step 2: only after the migration exited 0, roll out the new code.
+      # Only reached if the migration exited 0.
       - name: deploy app
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}

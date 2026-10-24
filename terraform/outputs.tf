@@ -1,5 +1,5 @@
-# Everything CI needs to run the migration task and roll the service.
-# No secret values are output; only the secret ARN.
+# What CI needs to run the migration and roll the service. Secret ARN only,
+# never the value.
 
 output "app_url" {
   description = "Open this in the browser during the demo."

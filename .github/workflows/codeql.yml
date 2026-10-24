@@ -1,9 +1,7 @@
 name: codeql
 
-# GitHub's code scanner. Looks for security bugs in the Python app and in
-# these workflow files (for example, untrusted input reaching a shell). Results
-# show up under Security > Code scanning. Runs on PRs, on main, and once a week
-# so new queries get a chance to find old bugs.
+# Scans the app and the workflow files (e.g. untrusted input reaching a
+# shell). The weekly run is so new queries get a shot at old code.
 on:
   pull_request:
     branches: [main]
@@ -34,7 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Python and workflow files are scanned from source, no build step needed.
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}

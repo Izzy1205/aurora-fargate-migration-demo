@@ -1,6 +1,4 @@
-############################################################
-# 1. terraform plan role (pull requests). Read-only.
-############################################################
+# Plan role, used by pull requests. Read only.
 resource "aws_iam_role" "plan" {
   name                 = "${local.p}-github-plan"
   description          = "terraform plan from pull requests. Read only."
@@ -41,11 +39,8 @@ resource "aws_iam_role_policy" "plan" {
   policy = data.aws_iam_policy_document.plan.json
 }
 
-############################################################
-# 2. terraform apply role (push to main, gated environment).
-#    Owns infrastructure. Cannot read DB credentials, cannot
-#    edit the CI roles or the OIDC provider.
-############################################################
+# Apply role, used by the infra job in the production-infra environment.
+# Can't read DB credentials or edit the CI roles or the OIDC provider.
 resource "aws_iam_role" "apply" {
   name                 = "${local.p}-github-terraform"
   description          = "terraform apply on main. Owns infrastructure, never schema or credentials."
@@ -53,9 +48,9 @@ resource "aws_iam_role" "apply" {
   max_session_duration = 3600
 }
 
-# PowerUserAccess covers every non-IAM service this stack uses. It is broad
-# on purpose for a demo; production would swap it for a policy generated from
-# CloudTrail (IAM Access Analyzer policy generation).
+# PowerUserAccess covers every non-IAM service the stack uses. Too broad for
+# real use; I'd replace it with a policy generated from CloudTrail by IAM
+# Access Analyzer.
 resource "aws_iam_role_policy_attachment" "apply_poweruser" {
   role       = aws_iam_role.apply.name
   policy_arn = "arn:${local.part}:iam::aws:policy/PowerUserAccess"
@@ -103,11 +98,9 @@ resource "aws_iam_role_policy" "apply" {
   policy = data.aws_iam_policy_document.apply.json
 }
 
-############################################################
-# 3. deploy/migrate role (push to main, gated environment).
-#    Pushes images, runs the Flyway task, rolls the service.
-#    Cannot change infrastructure and cannot read the secret.
-############################################################
+# Deploy role, used by the release job in the production-app environment.
+# Pushes images, runs the Flyway task, rolls the service. Can't change
+# infrastructure or read the secret.
 resource "aws_iam_role" "deploy" {
   name                 = "${local.p}-github-deploy"
   description          = "Push images, run Flyway task, update ECS service. No infrastructure changes."

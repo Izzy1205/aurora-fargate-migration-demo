@@ -1,5 +1,4 @@
-# Account-wide monthly cost budget. Budgets only alert; they never stop
-# resources. Teardown is still on you.
+# Account-wide. Budgets only alert, they don't stop anything.
 resource "aws_budgets_budget" "monthly" {
   name         = "${var.name_prefix}-monthly"
   budget_type  = "COST"

@@ -35,9 +35,8 @@ resource "aws_rds_cluster" "this" {
   copy_tags_to_snapshot               = true
   backup_retention_period             = 1
 
-  # DEMO ONLY. This stack is built, shown and destroyed in the same day, so
-  # there is nothing to protect. Production: deletion_protection = true and
-  # a final snapshot.
+  # Demo only, it's torn down the same day. Real stacks want deletion
+  # protection and a final snapshot.
   deletion_protection      = false
   skip_final_snapshot      = true
   delete_automated_backups = true
@@ -53,8 +52,7 @@ resource "aws_rds_cluster" "this" {
   depends_on = [aws_cloudwatch_log_group.postgresql]
 }
 
-# One writer, no readers. Serverless v2 instances use the "db.serverless"
-# class; t3/t4g classes are for provisioned instances only.
+# One writer, no readers. Serverless v2 has to use db.serverless.
 resource "aws_rds_cluster_instance" "writer" {
   identifier           = "${local.cluster_identifier}-writer"
   cluster_identifier   = aws_rds_cluster.this.id
