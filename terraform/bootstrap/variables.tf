@@ -59,3 +59,13 @@ variable "state_key" {
   type        = string
   default     = "aurora-fargate-migration-demo/terraform.tfstate"
 }
+
+variable "github_subject_prefixes" {
+  description = <<-EOT
+    Extra OIDC sub prefixes to trust. Repos that use GitHub's immutable subject
+    format send repo:OWNER@OWNER_ID/NAME@REPO_ID. Find yours with:
+    gh api repos/OWNER/NAME/actions/oidc/customization/sub
+  EOT
+  type        = list(string)
+  default     = []
+}

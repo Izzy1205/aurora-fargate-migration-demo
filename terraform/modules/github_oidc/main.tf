@@ -45,11 +45,19 @@ data "aws_iam_openid_connect_provider" "github" {
 # Trust policy builder: one role per GitHub "sub" claim.
 #   pull_request jobs           -> repo:OWNER/NAME:pull_request
 #   jobs with environment: X    -> repo:OWNER/NAME:environment:X
+#
+# GitHub can send the repo part of "sub" in two forms: the classic
+# repo:OWNER/NAME, or the immutable repo:OWNER@ID/NAME@ID form newer repos
+# use. Both are accepted; extra prefixes come from var.github_subject_prefixes.
+locals {
+  subject_prefixes = distinct(concat(["repo:${var.github_repo}"], var.github_subject_prefixes))
+}
+
 data "aws_iam_policy_document" "trust" {
   for_each = {
-    plan   = "repo:${var.github_repo}:pull_request"
-    apply  = "repo:${var.github_repo}:environment:${var.infra_environment}"
-    deploy = "repo:${var.github_repo}:environment:${var.app_environment}"
+    plan   = "pull_request"
+    apply  = "environment:${var.infra_environment}"
+    deploy = "environment:${var.app_environment}"
   }
 
   statement {
@@ -66,7 +74,7 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = [each.value]
+      values   = [for p in local.subject_prefixes : "${p}:${each.value}"]
     }
   }
 }

@@ -18,14 +18,15 @@ provider "aws" {
 module "github_oidc" {
   source = "../modules/github_oidc"
 
-  name_prefix          = "${var.project}-${var.environment}"
-  aws_region           = var.aws_region
-  github_repo          = var.github_repo
-  infra_environment    = var.github_infra_environment
-  app_environment      = var.github_app_environment
-  create_oidc_provider = var.create_github_oidc_provider
-  state_bucket_name    = var.state_bucket_name
-  state_key            = var.state_key
+  name_prefix             = "${var.project}-${var.environment}"
+  aws_region              = var.aws_region
+  github_repo             = var.github_repo
+  github_subject_prefixes = var.github_subject_prefixes
+  infra_environment       = var.github_infra_environment
+  app_environment         = var.github_app_environment
+  create_oidc_provider    = var.create_github_oidc_provider
+  state_bucket_name       = var.state_bucket_name
+  state_key               = var.state_key
 }
 
 output "plan_role_arn" {

@@ -13,6 +13,12 @@ variable "github_repo" {
   type        = string
 }
 
+variable "github_subject_prefixes" {
+  description = "Extra accepted sub prefixes, such as the immutable repo:OWNER@ID/NAME@ID form."
+  type        = list(string)
+  default     = []
+}
+
 variable "infra_environment" {
   description = "GitHub environment for the terraform apply job."
   type        = string
