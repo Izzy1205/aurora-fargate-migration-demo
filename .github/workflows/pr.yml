@@ -203,3 +203,113 @@ jobs:
       - run: pytest -q
       - name: docker build
         run: docker build --build-arg APP_VERSION="${GITHUB_SHA::7}" -t demo-app:ci .
+
+  sast:
+    name: bandit (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # Fails on any finding of medium or higher severity that bandit is at
+      # least medium sure about. Tests are skipped: asserts and fake values
+      # there are expected.
+      - name: bandit
+        run: |
+          pip install --quiet bandit==1.9.4
+          bandit -r app --exclude app/tests,app/.venv \
+            --severity-level medium --confidence-level medium
+
+  deps-scan:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # Checks every pinned package (and what it pulls in) against the PyPA
+      # and OSV advisory databases. Any known CVE fails the job.
+      - name: pip-audit
+        run: |
+          pip install --quiet pip-audit==2.10.1
+          pip-audit --progress-spinner off \
+            -r app/requirements.txt -r app/requirements-dev.txt
+
+  image-scan:
+    name: trivy (container image scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # upload results to the Security tab
+    steps:
+      - uses: actions/checkout@v7
+
+      # Built locally on the runner and never pushed anywhere.
+      - name: build images
+        run: |
+          docker build -t demo-app:ci app
+          docker build -t demo-migrate:ci db
+
+      # Trivy is pinned to a full commit SHA, not a tag. Its tags were hijacked
+      # in March 2026 (GHSA-69fq-xp46-6x23), and a SHA can't be moved.
+      # ignore-unfixed skips CVEs that have no fixed package yet, since there
+      # is nothing to upgrade to. Those still show in the full report.
+      - name: scan app image (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-app:ci
+          version: v0.70.0
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-app.sarif
+
+      - name: scan migration image (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-migrate:ci
+          version: v0.70.0
+          skip-setup-trivy: true
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-migrate.sarif
+
+      # Fork PRs get a read-only token, so only same-repo PRs upload.
+      - name: upload app results to Security tab
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-app.sarif
+          category: trivy-app-image
+
+      - name: upload migration results to Security tab
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-migrate.sarif
+          category: trivy-migrate-image
+
+      # The gate. A fixable HIGH or CRITICAL in either image fails the PR.
+      - name: gate on app image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-app:ci
+          version: v0.70.0
+          skip-setup-trivy: true
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: gate on migration image
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-migrate:ci
+          version: v0.70.0
+          skip-setup-trivy: true
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

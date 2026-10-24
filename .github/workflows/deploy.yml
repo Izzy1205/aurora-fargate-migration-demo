@@ -6,6 +6,9 @@ name: deploy
 #               the DB secret.
 #   release  -> deploy role. Pushes images, runs the migration task, updates
 #               the service. Cannot change infrastructure or read the secret.
+# A third job, scan, builds both images and runs Trivy on them with no AWS
+# access at all. It runs alongside infra. release only starts if the scan
+# passed, and it pushes the exact images that were scanned.
 #
 # Set both environments to require a reviewer:
 #   Settings > Environments > production-infra / production-app >
@@ -103,9 +106,58 @@ jobs:
             echo "app_url=$(terraform output -raw app_url)"
           } >> "$GITHUB_OUTPUT"
 
+  # Build and scan with no AWS credentials and no OIDC token, so a scanner
+  # problem can never reach AWS. A fixable CRITICAL CVE fails here, and then
+  # release never runs and nothing ships.
+  scan:
+    name: build and scan images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: build images
+        run: |
+          docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-app:$TAG" app
+          docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-migrate:$TAG" db
+
+      # Pinned to a full commit SHA (see the note in pr.yml). ignore-unfixed
+      # skips CVEs that have no fixed package yet.
+      - name: scan app image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-app:${{ env.TAG }}
+          version: v0.70.0
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: scan migration image
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: demo-migrate:${{ env.TAG }}
+          version: v0.70.0
+          skip-setup-trivy: true
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: save scanned images
+        run: docker save -o images.tar "demo-app:$TAG" "demo-migrate:$TAG"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: images
+          path: images.tar
+          retention-days: 1
+
   release:
     name: build, migrate, deploy
-    needs: infra
+    needs: [infra, scan]
     runs-on: ubuntu-latest
     environment: production-app
     permissions:
@@ -128,24 +180,31 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: build and push images
+      # The images the scan job built and passed. Not rebuilt here, so what
+      # ships is byte for byte what was scanned.
+      - uses: actions/download-artifact@v8
+        with:
+          name: images
+
+      - name: push scanned images
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           APP_REPO: ${{ needs.infra.outputs.app_repo }}
           MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
         run: |
+          docker load -i images.tar
           push_once() {
-            local repo=$1 dir=$2
+            local repo=$1 local_image=$2
             # Tags are immutable, so a re-run of the same commit reuses the image.
             if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
-              echo "$repo:$TAG already exists, skipping build"
+              echo "$repo:$TAG already exists, skipping push"
               return
             fi
-            docker build --build-arg APP_VERSION="${TAG::7}" -t "$REGISTRY/$repo:$TAG" "$dir"
+            docker tag "$local_image:$TAG" "$REGISTRY/$repo:$TAG"
             docker push "$REGISTRY/$repo:$TAG"
           }
-          push_once "$APP_REPO" app
-          push_once "$MIGRATION_REPO" db
+          push_once "$APP_REPO" demo-app
+          push_once "$MIGRATION_REPO" demo-migrate
 
       # Step 1 of the release: schema first. Expand-only migrations are safe
       # for the code that is still running.
