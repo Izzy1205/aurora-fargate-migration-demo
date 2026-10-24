@@ -16,7 +16,7 @@ resource "aws_vpc" "this" {
   tags = { Name = "${var.name_prefix}-vpc" }
 }
 
-# Strip every rule from the default security group so nothing lands in it by accident.
+# Empty the default SG so nothing ends up using it by accident.
 resource "aws_default_security_group" "default" {
   vpc_id = aws_vpc.this.id
   tags   = { Name = "${var.name_prefix}-default-locked" }
@@ -81,7 +81,7 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# ECR stores image layers in S3, so Fargate needs the S3 gateway endpoint to pull. Gateway endpoints are free.
+# ECR layers live in S3, so pulls need this. Gateway endpoints are free.
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.this.id
   service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"

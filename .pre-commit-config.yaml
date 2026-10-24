@@ -1,5 +1,5 @@
 # pip install pre-commit && pre-commit install
-# Hardening: pin rev to a commit SHA and run `pre-commit autoupdate` on a schedule.
+# TODO: pin rev to commit SHAs and run `pre-commit autoupdate` now and then.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1

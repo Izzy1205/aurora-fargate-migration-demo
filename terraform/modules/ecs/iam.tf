@@ -1,7 +1,6 @@
-# Two execution roles (used by the ECS agent to pull the image, write logs and
-# inject secrets) and two task roles (used by the running code). The app and
-# migration each get their own pair, so the app cannot pull the Flyway image
-# and the other way round.
+# The app and the migration each get their own execution role (pull image,
+# write logs, inject secrets) and task role, so neither can pull the other's
+# image.
 
 locals {
   task_kinds = {
@@ -73,9 +72,8 @@ resource "aws_iam_role_policy" "execution" {
   policy = data.aws_iam_policy_document.execution[each.key].json
 }
 
-# Task roles carry no permissions. Neither container calls AWS APIs; they only
-# talk to Postgres. The roles exist so the deploy role's PassRole can be
-# scoped to them.
+# No permissions, neither container calls AWS. They exist so the deploy
+# role's PassRole can be scoped to them.
 resource "aws_iam_role" "task" {
   for_each = local.task_kinds
 

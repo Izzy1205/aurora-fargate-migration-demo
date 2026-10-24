@@ -1,8 +1,7 @@
 # checkov config for CI and local runs:  checkov --config-file .checkov.yaml
 #
-# Every skip below is a conscious demo trade-off, not an oversight. The stack
-# lives for a few hours and holds only fake data. The README's "What
-# production would add" section lists the real fix for each one.
+# These skips are demo trade-offs. The stack lives a few hours and only holds
+# fake data. The README's production section has the real fix for each.
 directory:
   - terraform
 framework:

@@ -1,9 +1,7 @@
-# Dependabot opens PRs for new versions once a week. Security fixes for known
-# CVEs come as soon as they are published (Settings > Advanced Security >
-# Dependabot security updates), not on this schedule.
-#
-# Minor and patch bumps are grouped into one PR per ecosystem to keep the
-# noise down. Major bumps come one per PR so they get a proper look.
+# Weekly version bumps. CVE fixes don't wait for this, they come from
+# Dependabot security updates in the repo settings.
+# Minor and patch bumps are grouped per ecosystem to cut noise. Majors come one
+# per PR so I actually look at them.
 version: 2
 updates:
   - package-ecosystem: pip
@@ -32,7 +30,6 @@ updates:
       actions-minor:
         update-types: [minor, patch]
 
-  # Provider constraints and lock files for both roots and every module.
   - package-ecosystem: terraform
     directories:
       - /terraform

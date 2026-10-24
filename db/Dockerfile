@@ -1,19 +1,17 @@
-# Flyway migration image. Runs as a one-off ECS task inside the VPC.
-# Connection settings come from the task definition:
-#   FLYWAY_URL                     plain environment variable
-#   FLYWAY_USER, FLYWAY_PASSWORD   injected by ECS from Secrets Manager
-# Hardening: pin by digest (flyway/flyway:13.11.1-alpine@sha256:...).
+# Flyway image, run as a one-off ECS task in the VPC. FLYWAY_URL comes from
+# the task definition, FLYWAY_USER and FLYWAY_PASSWORD are injected by ECS
+# from Secrets Manager.
+# TODO: pin by digest (flyway/flyway:13.11.1-alpine@sha256:...).
 FROM flyway/flyway:13.11.1-alpine
 
 ENV FLYWAY_LOCATIONS=filesystem:/flyway/sql \
     FLYWAY_CLEAN_DISABLED=true \
     REDGATE_DISABLE_TELEMETRY=true
 
-# The base image ships JDBC drivers for about 20 databases. Most of its CVEs
-# live in three drivers this image never uses (Databricks, Couchbase, SQL
-# Server), so drop those along with the Flyway plugins that load them. A
-# plugin left behind without its driver crashes Flyway at startup. Also pull
-# in any Alpine security fixes newer than the base image.
+# The base image ships JDBC drivers for ~20 databases. Most of its CVEs are
+# in three we never use (Databricks, Couchbase, SQL Server), so delete those
+# and their Flyway plugins too. A plugin without its driver crashes Flyway at
+# startup. apk upgrade picks up Alpine fixes newer than the base image.
 RUN apk upgrade --no-cache \
  && rm -rf /flyway/drivers/couchbase \
       /flyway/drivers/databricks-jdbc-*.jar \
@@ -25,7 +23,7 @@ RUN apk upgrade --no-cache \
 
 RUN addgroup -S migrate && adduser -S -G migrate -h /home/migrate migrate
 
-# Owned by root, readable by the runtime user, not writable by it.
+# Owned by root so the runtime user can read but not change them.
 COPY migrations/ /flyway/sql/
 
 USER migrate

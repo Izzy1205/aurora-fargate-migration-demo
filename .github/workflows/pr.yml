@@ -1,7 +1,7 @@
 name: pr
 
-# Checks on every pull request. Nothing here can change AWS: the plan job
-# assumes a read-only role, and the other jobs have no AWS access at all.
+# Nothing here can change AWS. The plan job uses the read-only role and the
+# rest have no AWS access.
 on:
   pull_request:
     branches: [main]
@@ -18,8 +18,8 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
-# Hardening note: actions are pinned to major tags for readability. For a
-# real pipeline, pin each one to a full commit SHA and let Dependabot bump it.
+# Actions are on major tags to keep this readable. TODO: pin to SHAs and let
+# Dependabot bump them.
 
 jobs:
   terraform:
@@ -140,8 +140,8 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          # Local, throwaway CI container with no network exposure beyond
-          # the runner. Trust auth avoids putting even a fake password here.
+          # Throwaway container on the runner. Trust auth so there's no
+          # password in the file at all, not even a fake one.
           POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
@@ -212,9 +212,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      # Fails on any finding of medium or higher severity that bandit is at
-      # least medium sure about. Tests are skipped: asserts and fake values
-      # there are expected.
+      # Medium severity and confidence or higher fails. Tests are excluded
+      # since they're full of asserts and fake values.
       - name: bandit
         run: |
           pip install --quiet bandit==1.9.4
@@ -229,8 +228,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      # Checks every pinned package (and what it pulls in) against the PyPA
-      # and OSV advisory databases. Any known CVE fails the job.
+      # Any known CVE in the pins or their dependencies fails the job.
       - name: pip-audit
         run: |
           pip install --quiet pip-audit==2.10.1
@@ -246,16 +244,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Built locally on the runner and never pushed anywhere.
+      # Built on the runner, never pushed.
       - name: build images
         run: |
           docker build -t demo-app:ci app
           docker build -t demo-migrate:ci db
 
-      # Trivy is pinned to a full commit SHA, not a tag. Its tags were hijacked
-      # in March 2026 (GHSA-69fq-xp46-6x23), and a SHA can't be moved.
-      # ignore-unfixed skips CVEs that have no fixed package yet, since there
-      # is nothing to upgrade to. Those still show in the full report.
+      # Pinned to a SHA, not a tag. Trivy's tags were hijacked in March 2026
+      # (GHSA-69fq-xp46-6x23) and a SHA can't be moved. ignore-unfixed skips
+      # CVEs with nothing to upgrade to yet.
       - name: scan app image (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -292,7 +289,7 @@ jobs:
           sarif_file: trivy-migrate.sarif
           category: trivy-migrate-image
 
-      # The gate. A fixable HIGH or CRITICAL in either image fails the PR.
+      # The actual gate: a fixable HIGH or CRITICAL in either image fails.
       - name: gate on app image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

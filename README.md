@@ -1,20 +1,12 @@
 # aurora-fargate-migration-demo
 
-A small but real stack for showing a zero-downtime schema change on AWS:
+A small AWS stack I use to show a zero-downtime schema change. Aurora
+PostgreSQL Serverless v2, a Python API on Fargate behind an ALB, all of it in
+Terraform. Flyway runs the migrations as a one-off ECS task from the pipeline.
 
-- Aurora PostgreSQL Serverless v2 (scales to 0 ACU when idle)
-- A Python API on ECS Fargate behind an Application Load Balancer
-- Everything defined in Terraform
-- Schema changes run by Flyway as a one-off ECS task, from the pipeline
-
-The demo itself is one pull request. It adds a `priority` column to `orders`
-with an expand-only migration. The app that is already running keeps working,
-and the app handles rows where `priority` is NULL.
-
-Nothing here has been applied to an AWS account yet. Read "Before you start"
-and "Spin-up order" before running anything.
-
-## Architecture
+The demo is one pull request (`add-order-priority`) that adds a `priority`
+column to `orders` as an expand-only migration. The running app keeps working
+the whole time, and the new code treats NULL as "not set yet".
 
 ```mermaid
 flowchart LR
@@ -43,192 +35,177 @@ flowchart LR
     rel -->|ecs:RunTask| mig
 ```
 
-The private subnets have no route to the internet at all. Tasks reach ECR,
-Secrets Manager and CloudWatch Logs through VPC interface endpoints, and pull
-image layers through the free S3 gateway endpoint.
+The private subnets have no route to the internet. Tasks reach ECR, Secrets
+Manager and CloudWatch Logs through interface endpoints and pull image layers
+through the S3 gateway endpoint. No NAT gateway.
 
 ## Who owns what
 
-The main idea: Terraform owns infrastructure, Flyway owns the schema. They run
-in different jobs, with different IAM roles, and neither can do the other's
-job.
+Terraform owns the infrastructure and Flyway owns the schema. They run in
+separate jobs with separate IAM roles, and neither can do the other's job.
 
 | Thing | Owner | How it changes |
 |---|---|---|
 | VPC, subnets, security groups, endpoints | Terraform | `deploy.yml` infra job |
-| Aurora cluster, ALB, ECS cluster, ECR, log groups, budget | Terraform | `deploy.yml` infra job |
+| Aurora, ALB, ECS cluster, ECR, log groups, budget | Terraform | `deploy.yml` infra job |
 | Task definition shape (CPU, memory, env, secrets) | Terraform | `deploy.yml` infra job |
-| Which image a task runs | Pipeline | `deploy.yml` release job registers a new revision |
-| Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run as an ECS task by the release job |
-| DB master password | RDS (Secrets Manager) | Created and rotated by RDS. Nobody types it. |
-| GitHub OIDC provider and the three CI roles | `terraform/bootstrap` | Applied once by hand with admin credentials |
+| Which image a task runs | Pipeline | release job registers a new revision |
+| Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run by the release job |
+| DB master password | RDS | RDS creates and rotates it in Secrets Manager |
+| OIDC provider and the three CI roles | `terraform/bootstrap` | applied by hand, once |
 
-### IAM roles
+The CI roles:
 
-| Role | Used by | Can | Cannot |
+| Role | Used by | Can | Can't |
 |---|---|---|---|
-| `migdemo-demo-github-plan` | `pr.yml`, any PR branch in this repo | Read the account, read state | Write anything, read the DB secret |
-| `migdemo-demo-github-terraform` | `deploy.yml` infra job, `production-infra` environment | Create and change the stack | Read the DB secret, run ECS tasks, touch the CI roles or OIDC provider |
-| `migdemo-demo-github-deploy` | `deploy.yml` release job, `production-app` environment | Push to the two ECR repos, register task definitions, run the migrate task, update the app service | Change infrastructure, read the DB secret |
-| app and migrate execution roles | ECS | Pull their own image, write their own logs, read the DB secret to inject it | Anything else |
-| app and migrate task roles | Container code | Nothing (no policies attached) | Everything |
+| `migdemo-demo-github-plan` | `pr.yml` | read the account and state | write anything, read the DB secret |
+| `migdemo-demo-github-terraform` | infra job, `production-infra` env | create and change the stack | read the DB secret, run tasks, touch the CI roles |
+| `migdemo-demo-github-deploy` | release job, `production-app` env | push to ECR, register task defs, run the migrate task, update the service | change infra, read the DB secret |
 
-The CI roles live in a separate Terraform root (`terraform/bootstrap`) so the
-pipeline can never edit its own permissions.
+The ECS execution roles can pull their own image, write their own logs and
+read the DB secret to inject it. The task roles have no policies at all,
+since neither container calls AWS.
 
-The DB credentials only ever exist inside the running containers. ECS injects
-them from Secrets Manager at start-up. They are not in Terraform state, not in
-GitHub, not in any file in this repo.
+I kept the CI roles in their own Terraform root so the pipeline can't edit its
+own permissions. The DB password only exists inside the running containers.
+ECS injects it from Secrets Manager at start-up, so it's not in state, not in
+GitHub and not in this repo.
 
-## Expand and contract rules
+## Expand and contract
 
-Every schema change ships in steps, so the code that is running right now
-never sees a schema it does not understand.
+Schema changes go out in steps so the code that's running never sees a schema
+it doesn't understand:
 
-1. **Expand.** Add things only. New columns are nullable with no default
-   rewrite. New constraints go in as `NOT VALID`. Never rename or drop in this
-   step. Old code ignores the new column; new code treats NULL as "not set
-   yet".
-2. **Deploy code** that reads and writes the new column and still handles NULL.
-3. **Backfill** old rows in small batches, as its own release.
-4. **Contract.** Once no running code depends on the old shape, validate
-   constraints, set defaults, add NOT NULL, drop old columns.
+1. Expand: add only. New columns are nullable with no default, new
+   constraints go in as `NOT VALID`, nothing gets renamed or dropped. Old code
+   ignores the column, new code handles NULL.
+2. Ship code that reads and writes the new column.
+3. Backfill old rows in small batches, as its own release.
+4. Contract: once nothing depends on the old shape, validate constraints, set
+   defaults and NOT NULL, drop what's unused.
 
-Other rules this repo follows:
+A few other rules. Migrations run before the new app version rolls out, which
+is only safe because they're expand-only. Each one sets `lock_timeout` so a
+blocked `ALTER TABLE` fails fast instead of stacking every query up behind
+it. Merged migrations are never edited (Flyway's checksums catch it), `flyway
+clean` is disabled, and the app selects columns by name, never `SELECT *`.
 
-- Migrations run before the new app version rolls out. That is only safe
-  because they are expand-only.
-- Each migration sets `lock_timeout` so a blocked `ALTER TABLE` fails fast
-  instead of queueing every query behind it.
-- Migrations are never edited after they merge. Flyway checksums enforce this.
-- `flyway clean` is disabled everywhere.
-- The app reads columns by name and never uses `SELECT *`.
+`db/future/` has V4 (backfill) and V5 (enforce) to show what the next two
+releases look like. Flyway doesn't read that folder.
 
-`db/migrations/V3__add_order_priority.sql` is the expand step.
-`db/future/` holds V4 (backfill) and V5 (enforce) as examples of the next two
-releases. Flyway does not read that folder.
-
-## Repo layout
+## Layout
 
 ```
-.github/workflows/   pr.yml (checks + read-only plan), deploy.yml (apply, migrate, deploy)
-.github/workflows/   codeql.yml (code scanning on PRs, main and weekly)
-.github/dependabot.yml  weekly version bumps and CVE fixes
-terraform/           main stack (network, database, registry, ecs, budget modules)
-terraform/bootstrap/ GitHub OIDC provider and the three CI roles, applied once by hand
-db/migrations/       Flyway migrations V1 (schema), V2 (seed), V3 (expand)
-db/future/           contract steps, not applied
-db/Dockerfile        Flyway image with the migrations baked in
-app/                 FastAPI app, tests, Dockerfile
-scripts/             helpers the release job calls
+.github/workflows/      pr.yml (checks + read-only plan), deploy.yml, codeql.yml
+.github/dependabot.yml  weekly version bumps
+terraform/              main stack (network, database, registry, ecs, budget)
+terraform/bootstrap/    OIDC provider and CI roles, applied by hand
+db/migrations/          Flyway migrations
+db/future/              contract steps, not applied
+db/Dockerfile           Flyway image with the migrations baked in
+app/                    FastAPI app, tests, Dockerfile
+scripts/                helpers the release job calls
 ```
 
-## Before you start
+## Setup
 
-Fill these in. None of them are secrets, but the tfvars and backend files are
-gitignored anyway.
+You need Terraform 1.9+, AWS CLI v2 and admin credentials for the one-time
+bootstrap. None of these values are secrets, but the tfvars and backend files
+are gitignored anyway.
 
-| What | Where |
+| Value | Goes in |
 |---|---|
-| AWS region | `terraform/terraform.tfvars`, `terraform/bootstrap/terraform.tfvars`, `terraform/backend.hcl`, GitHub var `AWS_REGION` |
-| State bucket name | `terraform/backend.hcl`, `terraform/bootstrap/terraform.tfvars`, GitHub var `TF_STATE_BUCKET` |
-| GitHub repo (`owner/name`) | `terraform/bootstrap/terraform.tfvars` |
-| Budget alert email | `terraform/terraform.tfvars`, GitHub var `BUDGET_EMAIL` |
-| Your public IP as a /32 | `terraform/terraform.tfvars`, GitHub var `ALB_INGRESS_CIDRS` (JSON, for example `["203.0.113.10/32"]`) |
-| Owner tag | `terraform/terraform.tfvars`, GitHub var `OWNER` |
+| Region | `terraform.tfvars`, `bootstrap/terraform.tfvars`, `backend.hcl`, var `AWS_REGION` |
+| State bucket | `backend.hcl`, `bootstrap/terraform.tfvars`, var `TF_STATE_BUCKET` |
+| GitHub repo (`owner/name`) | `bootstrap/terraform.tfvars` |
+| Budget email | `terraform.tfvars`, var `BUDGET_EMAIL` |
+| Your IP as a /32 | `terraform.tfvars`, var `ALB_INGRESS_CIDRS` (JSON, e.g. `["203.0.113.10/32"]`) |
+| Owner tag | `terraform.tfvars`, var `OWNER` |
 
-Also check that the Aurora PostgreSQL version in `terraform/variables.tf`
-(`aurora_engine_version`, default `16.9`) is offered in your region. Scaling to
-0 ACU needs 16.3 or newer on the 16 line:
+Check that the Aurora version (`aurora_engine_version` in
+`terraform/variables.tf`, default `16.9`) is offered in your region. Scale to
+zero needs 16.3 or newer on the 16 line.
 
 ```
 aws rds describe-db-engine-versions --engine aurora-postgresql \
   --query 'DBEngineVersions[].EngineVersion' --output text
 ```
 
-Tools: Terraform 1.9 or newer, AWS CLI v2, and an admin profile for the
-one-time bootstrap (SSO is best).
+### 1. State bucket
 
-## Spin-up order
+Once, by hand. New buckets get SSE-S3 by default.
 
-1. **State bucket** (once, by hand):
+```
+aws s3api create-bucket --bucket <state-bucket> --region <region>
+# outside us-east-1, also pass:
+#   --create-bucket-configuration LocationConstraint=<region>
+aws s3api put-bucket-versioning --bucket <state-bucket> \
+  --versioning-configuration Status=Enabled
+aws s3api put-public-access-block --bucket <state-bucket> \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+```
 
-   ```
-   aws s3api create-bucket --bucket <state-bucket> --region <region>
-   # outside us-east-1 also add:
-   #   --create-bucket-configuration LocationConstraint=<region>
-   aws s3api put-bucket-versioning --bucket <state-bucket> \
-     --versioning-configuration Status=Enabled
-   aws s3api put-public-access-block --bucket <state-bucket> \
-     --public-access-block-configuration \
-     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-   ```
+### 2. Bootstrap the CI roles
 
-   New buckets are encrypted with SSE-S3 by default.
+Run this locally with admin credentials. It's the only Terraform that doesn't
+go through the pipeline.
 
-2. **Bootstrap the CI roles** with admin credentials:
+```
+cd terraform
+cp backend.hcl.example backend.hcl                                # fill in
+cp bootstrap/terraform.tfvars.example bootstrap/terraform.tfvars  # fill in
+cd bootstrap
+terraform init -backend-config=../backend.hcl \
+  -backend-config="key=aurora-fargate-migration-demo/bootstrap.tfstate"
+terraform plan -out=tfplan
+terraform apply tfplan
+terraform output
+```
 
-   ```
-   cd terraform
-   cp backend.hcl.example backend.hcl                         # fill in
-   cp bootstrap/terraform.tfvars.example bootstrap/terraform.tfvars   # fill in
-   cd bootstrap
-   terraform init -backend-config=../backend.hcl \
-     -backend-config="key=aurora-fargate-migration-demo/bootstrap.tfstate"
-   terraform plan -out=tfplan
-   terraform apply tfplan
-   terraform output
-   ```
+If the account already has a GitHub OIDC provider, set
+`create_github_oidc_provider = false`. If the plan job fails with "Not
+authorized to perform sts:AssumeRoleWithWebIdentity", GitHub is sending the
+immutable subject format; see the comment in `terraform.tfvars.example`.
 
-   If the account already has a GitHub OIDC provider, set
-   `create_github_oidc_provider = false`.
+### 3. GitHub
 
-3. **GitHub setup** (private repo):
-   - Repository variables (Settings > Secrets and variables > Actions >
-     Variables): `AWS_REGION`, `OWNER`, `BUDGET_EMAIL`, `ALB_INGRESS_CIDRS`,
-     `TF_STATE_BUCKET`, and the three role ARNs from step 2 as
-     `AWS_PLAN_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`.
-     These are variables, not secrets. No AWS keys are stored in GitHub.
-   - Environments: create `production-infra` and `production-app`. On both,
-     add yourself as a required reviewer and limit deployment branches to
-     `main`. The role trust policies only accept tokens from these
-     environments.
-   - Branch protection on `main`: require a PR and the `pr` checks.
+- Repo variables (Settings > Secrets and variables > Actions > Variables): the
+  ones in the table above, plus the three role ARNs from step 2 as
+  `AWS_PLAN_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN`.
+  No AWS keys go in GitHub.
+- Environments `production-infra` and `production-app`, each with a required
+  reviewer and deployments limited to `main`. The role trust policies only
+  accept tokens from these environments.
+- Branch protection on `main`: require a PR and the `pr` checks.
 
-4. **The demo PR is already staged.** `main` holds V1 and V2 only. The
-   `add-order-priority` branch adds `V3__add_order_priority.sql` on top, so
-   opening a PR from it is the demo.
+### 4. First deploy
 
-5. **First deploy.** `deploy.yml` is manual-only for now, so run it from
-   the Actions tab (deploy > Run workflow on `main`). Once you want deploys on
-   every merge, add the `push` trigger back at the top of the file. It runs the infra job (about 10 to
-   15 minutes, mostly Aurora), then the release job builds the images, runs
-   V1 and V2, and starts one app task. The `app_url` output is the address.
-   Confirm the budget subscription email AWS sends you.
+`deploy.yml` is manual for now. Run it from the Actions tab on `main`. The
+infra job takes 10 to 15 minutes (mostly Aurora), then the release job pushes
+the images, runs the migrations and starts one app task. The run summary
+prints the app URL. Confirm the budget subscription email AWS sends you.
 
-The ECS service is created with 0 tasks and the bootstrap image tag, because
-the images do not exist yet when Terraform first runs. The release job sets
-the real image and scales it to 1.
+Terraform creates the ECS service with 0 tasks and a placeholder image tag,
+since the images don't exist yet on the first run. The release job sets the
+real image and scales it to 1. To deploy on every merge instead, add a `push`
+trigger for `main` at the top of `deploy.yml`.
 
-## Demo steps
+## Running the demo
 
-1. Open the app URL. Orders show, no priority column yet.
-2. Push `add-order-priority` and open the PR. Walk through:
-   - `pr.yml`: fmt, validate, tflint, checkov, gitleaks, pytest, Docker
-     build, and a Terraform plan from the read-only role showing no infra
-     change.
-   - The `migrations` job runs V1 and V2 against a throwaway Postgres, then V3,
-     then checks every existing row has `priority` NULL.
-   - The migration itself: nullable column, `NOT VALID` check,
-     `lock_timeout`.
-3. Merge. Approve `production-infra` (no-op apply), then `production-app`.
-4. Watch the release job: Flyway runs V3 in the private subnets, then the app
-   rolls. The old task keeps serving during the migration.
-5. Refresh the page. The priority column shows `standard (default, NULL in
-   DB)` for every row. Nothing broke, no row was rewritten.
-6. Talk through `db/future/`: backfill next release, enforce the release after.
-
-Handy checks during the demo:
+1. Open the app URL. Orders show, no priority yet.
+2. Open a PR from `add-order-priority`. In the checks, the plan shows no infra
+   change, and the Flyway job runs V1 and V2 against a throwaway Postgres,
+   then V3, then confirms every existing row still has `priority` NULL. Walk
+   through the migration itself: nullable column, `NOT VALID` check,
+   `lock_timeout`.
+3. Merge, run deploy, approve `production-infra` (no-op apply) and then
+   `production-app`.
+4. Flyway runs V3 in the private subnets, then the app rolls. The old task
+   keeps serving the whole time.
+5. Refresh. Every row shows `standard (default, NULL in DB)`. Nothing was
+   rewritten.
+6. Talk through `db/future/`: backfill next release, enforce the one after.
 
 ```
 curl http://<app_url>/health        # liveness, no DB
@@ -236,8 +213,8 @@ curl http://<app_url>/ready         # opens a DB connection
 curl "http://<app_url>/orders?limit=5"
 ```
 
-The first request after Aurora has paused takes around 15 seconds while it
-resumes. `/ready` is a good way to wake it before you start.
+If Aurora has paused, the first request takes about 15 seconds. Hit `/ready`
+before you start to wake it up.
 
 ## Running locally
 
@@ -248,9 +225,8 @@ pip install -r requirements.txt -r requirements-dev.txt
 pytest
 ```
 
-The tests use a fake repository and need no database.
-
-To try the migrations against a local Postgres:
+The tests use a fake repository, no database needed. To try the migrations
+against a local Postgres:
 
 ```
 docker run --rm -d --name pg -e POSTGRES_PASSWORD=local -p 5432:5432 postgres:16
@@ -262,33 +238,30 @@ docker run --rm --network host \
 
 ## Cost
 
-This is not free tier. Aurora is never free tier. New AWS accounts get
-promotional credits, which should cover this several times over, but check the
-current offer and your credit balance before relying on it.
+Not free tier (Aurora never is). New account credits cover it easily, but
+check your balance. Rough us-east-1 numbers while it's up:
 
-Rough us-east-1 numbers while the stack is up:
-
-| Item | Approx. cost |
+| Item | Approx. |
 |---|---|
-| Aurora Serverless v2 | about $0.12 per ACU-hour while active, $0 compute when paused (0 ACU after 5 idle minutes), plus storage |
-| ALB | about $0.023 per hour plus a little for traffic, plus public IPv4 addresses |
-| Fargate, one 0.25 vCPU / 0.5 GB task | about $0.01 per hour |
-| 4 interface endpoints, one AZ | about $0.04 per hour (twice that with `single_az_endpoints = false`) |
-| RDS managed secret | $0.40 per month, prorated |
+| Aurora Serverless v2 | ~$0.12 per ACU-hour when active, $0 compute when paused (after 5 idle minutes), plus storage |
+| ALB | ~$0.023/hour plus traffic and public IPv4 |
+| Fargate, one 0.25 vCPU / 0.5 GB task | ~$0.01/hour |
+| 4 interface endpoints, one AZ | ~$0.04/hour (double with `single_az_endpoints = false`) |
+| RDS managed secret | $0.40/month, prorated |
 | ECR, CloudWatch Logs | cents |
 
-Expect roughly $0.10 to $0.40 an hour depending on how busy the database is.
-A day of leaving it up idle is a few dollars. There is no NAT gateway, which
-would otherwise be the biggest line item.
+Call it $0.10 to $0.40 an hour depending on how busy the DB is, or a few
+dollars for a day left idle. Skipping the NAT gateway is what keeps it this
+low.
 
-The `$10` monthly budget emails at 80% of actual spend and 100% of forecast.
-It is account-wide. **A budget only alerts. It does not stop anything.**
-Tearing down is the only real cost control.
+The $10 monthly budget emails at 80% of actual and 100% of forecast, account
+wide. It only alerts, it doesn't stop anything. Tearing down is the real cost
+control.
 
 ## Teardown
 
-There is no destroy workflow on purpose. Tear down from your machine with an
-admin profile:
+There's no destroy workflow, on purpose. From your machine with admin
+credentials:
 
 ```
 cd terraform
@@ -297,16 +270,12 @@ terraform plan -destroy -out=destroy.tfplan
 terraform apply destroy.tfplan
 ```
 
-The ECR repos use `force_delete` and the cluster skips its final snapshot, so
-destroy does not get stuck on images or snapshots. Both settings are for this
-demo only.
+ECR repos use `force_delete` and the cluster skips its final snapshot so
+destroy doesn't hang on either. Both are demo-only settings. If you're done for
+good, destroy `terraform/bootstrap` the same way and delete the state bucket
+(empty all object versions first).
 
-Then, if you are completely done, destroy `terraform/bootstrap` the same way
-and delete the state bucket (empty all object versions first).
-
-### Leftovers checklist
-
-Check these in the region after destroy:
+Things to check in the region afterwards:
 
 - [ ] RDS: no clusters, no instances, no manual snapshots
 - [ ] Secrets Manager: no `rds!cluster-...` secret (deleted with the cluster)
@@ -322,78 +291,34 @@ Check these in the region after destroy:
 - [ ] S3: state bucket deleted, or kept on purpose
 - [ ] Billing > Bills the next day: nothing still accruing
 
-## What production would add
+## Security checks
 
-This is sized for a demo, not for real traffic or real data. The gaps, on
-purpose:
+Every PR to `main` runs:
 
-- **Network egress.** No NAT gateway, so tasks can only reach AWS services
-  that have endpoints here. A real service that calls third-party APIs needs a
-  NAT gateway per AZ or an egress proxy. Endpoints would also go in every AZ.
-- **Availability.** One Aurora writer, no reader, one app task. Production
-  wants a reader in a second AZ, at least two tasks across AZs, and a min ACU
-  above 0 so nobody waits for a resume.
-- **TLS.** The ALB is plain HTTP, limited to one IP. Production needs a domain,
-  an ACM certificate, an HTTPS listener with a modern TLS policy, and HTTP
-  redirected to HTTPS.
-- **WAF** in front of the ALB, with the AWS managed rule groups and rate
-  limiting.
-- **Database access.** The app uses the master user. Production would have
-  separate DB roles: a migration role that owns the schema and an app role with
-  only the grants it needs, ideally with IAM auth (already switched on here).
-- **Encryption keys.** Everything is encrypted with AWS managed keys. Production
-  would use customer managed KMS keys for Aurora, the secret, ECR and logs.
-- **Protection and recovery.** Deletion protection, final snapshots, longer
-  backup retention, an AWS Backup plan, longer log retention.
-- **Observability.** Performance Insights, Container Insights, ALB access logs,
-  alarms.
-- **CI hardening.** Pin every action to a commit SHA, swap `PowerUserAccess`
-  on the terraform role for a hand-written policy, and narrow the read-only
-  plan role (`ReadOnlyAccess` can still read things like S3 objects).
-- **Release gate.** The deploy role decides what code runs next to the DB
-  secret. Code review and the required reviewers on the GitHub environments
-  are the real control there.
+- `terraform fmt`, `validate` and `tflint`, then a plan from the read-only role
+  posted as a PR comment
+- Checkov on the Terraform. Skipped checks are listed with reasons in
+  `.checkov.yaml`
+- Gitleaks over the full git history, not just the diff
+- Bandit (fails on medium or higher) and CodeQL on the app, plus CodeQL on the
+  workflow files. CodeQL also runs on `main` and weekly
+- pip-audit on the pinned Python packages
+- Trivy on both images, built on the runner and never pushed. Fails on any
+  fixable HIGH or CRITICAL, results go to the Security tab
+- The Flyway migration test and pytest
 
-`.checkov.yaml` lists each skipped check with the reason. They map to the list
-above.
+Only the plan job uses AWS credentials, and it's skipped on fork PRs since
+they don't get an OIDC token.
 
-## Security checks on every PR
+The deploy workflow scans both images again before pushing to ECR. A fixable
+CRITICAL stops the release, and what gets pushed is the exact image that was
+scanned. Dependabot watches the Python pins, both Dockerfiles, the Actions
+and the Terraform providers.
 
-Every pull request to `main` runs these before it can merge. None of them need
-AWS access, so they also run safely on PRs from forks.
+Trivy's action is pinned to a commit SHA rather than a tag because its tags
+were hijacked in March 2026 to steal CI secrets (GHSA-69fq-xp46-6x23).
 
-- **Terraform checks.** `terraform fmt`, `validate` and `tflint`, then a plan
-  with the read-only role, posted as a PR comment.
-- **IaC scan.** Checkov reads the Terraform for insecure settings. Every
-  skipped check is listed with its reason in `.checkov.yaml`.
-- **Secret scan.** Gitleaks reads the full git history, not just the diff.
-- **Python code scan (SAST).** Bandit fails on medium or higher findings in
-  the app code. CodeQL also scans the app and the workflow files, and runs
-  again on `main` and once a week.
-- **Dependency CVEs.** pip-audit checks every pinned Python package against
-  the public advisory databases.
-- **Container image scan.** Trivy builds the app and Flyway images on the
-  runner (nothing is pushed) and fails on any HIGH or CRITICAL CVE that has a
-  fix available. Results also go to the Security tab.
-- **Migration test.** Flyway runs every migration against a throwaway
-  Postgres and checks that the expand step left existing rows alone.
-- **App tests.** pytest, plus a test build of the app image.
-
-The deploy workflow scans both images again with Trivy before anything is
-pushed to ECR. A fixable CRITICAL CVE stops the release, and the images that
-get pushed are the same ones that were scanned.
-
-Dependabot watches the Python pins, both Dockerfiles, the GitHub Actions and
-the Terraform providers. It opens a PR for known CVEs right away, and for
-other updates once a week.
-
-Trivy is pinned to a full commit SHA instead of a tag. Its release tags were
-hijacked in March 2026 to steal CI secrets (GHSA-69fq-xp46-6x23), and a SHA
-can't be moved that way.
-
-## Checks
-
-Run before every push (CI runs the same):
+To run the same checks locally:
 
 ```
 terraform -chdir=terraform fmt -check -recursive
@@ -407,5 +332,30 @@ bandit -r app --exclude app/tests,app/.venv --severity-level medium --confidence
 pip-audit -r app/requirements.txt -r app/requirements-dev.txt
 ```
 
-`.pre-commit-config.yaml` runs gitleaks and `terraform fmt` on commit if you
-use pre-commit.
+`.pre-commit-config.yaml` runs gitleaks and `terraform fmt` on commit if you use
+pre-commit.
+
+## What I'd add for production
+
+This is sized for a demo with fake data. The gaps are deliberate:
+
+- A NAT gateway or egress proxy per AZ if the app ever calls outside APIs, and
+  endpoints in every AZ.
+- An Aurora reader in a second AZ, two or more app tasks, and min ACU above 0
+  so nobody waits on a resume.
+- HTTPS: a domain, an ACM cert, a modern TLS policy, HTTP redirected. WAF in
+  front with the managed rule groups and rate limiting.
+- Separate DB roles: one that owns the schema for migrations and one for the
+  app with only the grants it needs, ideally with IAM auth (already turned on).
+- Customer managed KMS keys for Aurora, the secret, ECR and logs.
+- Deletion protection, final snapshots, longer backup and log retention, an
+  AWS Backup plan.
+- Performance Insights, Container Insights, ALB access logs and CloudWatch
+  alarms.
+- Every action pinned to a SHA, a hand-written policy instead of
+  `PowerUserAccess` on the terraform role, and a narrower plan role
+  (`ReadOnlyAccess` can still read S3 objects).
+
+The deploy role decides what code runs next to the DB secret, so code review
+and the environment reviewers are the real control on releases. The skips in
+`.checkov.yaml` line up with this list.

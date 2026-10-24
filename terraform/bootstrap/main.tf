@@ -1,6 +1,5 @@
-# Bootstrap stack: the CI identities. Applied once from Izzy's own machine
-# with his own admin credentials, never from the pipeline. Keeping it apart
-# means the pipeline's terraform role cannot widen its own permissions.
+# The CI identities. Applied by hand with admin credentials, never from the
+# pipeline, so the pipeline's terraform role can't widen its own permissions.
 
 provider "aws" {
   region = var.aws_region
