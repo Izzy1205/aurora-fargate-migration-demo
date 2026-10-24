@@ -2,7 +2,7 @@
 
 /health  liveness, never touches the database (used by the ALB)
 /ready   readiness, checks the database
-/orders  JSON, includes priority whether or not the V3 column exists
+/orders  JSON, includes priority whether or not the V12 column exists
 /customers JSON
 /        small HTML page for the live demo
 /ssn/tokenize        POST
