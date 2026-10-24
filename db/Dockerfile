@@ -9,6 +9,14 @@ ENV FLYWAY_LOCATIONS=filesystem:/flyway/sql \
     FLYWAY_CLEAN_DISABLED=true \
     REDGATE_DISABLE_TELEMETRY=true
 
+# The base image ships JDBC drivers for about 20 databases. This one only
+# talks to Postgres, so drop the rest. Most of the image's CVEs live in those
+# unused drivers (Databricks, Couchbase, SQL Server). Also pull in any Alpine
+# security fixes newer than the base image.
+RUN apk upgrade --no-cache \
+ && find /flyway/drivers -mindepth 1 -maxdepth 1 ! -name 'postgresql-*.jar' -exec rm -rf {} + \
+ && ls /flyway/drivers/postgresql-*.jar
+
 RUN addgroup -S migrate && adduser -S -G migrate -h /home/migrate migrate
 
 # Owned by root, readable by the runtime user, not writable by it.
