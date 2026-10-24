@@ -57,7 +57,7 @@ variable "single_az_endpoints" {
 variable "aurora_engine_version" {
   description = "Aurora PostgreSQL version. Scale to zero needs 16.3+ (or 15.7+, 14.12+, 13.15+)."
   type        = string
-  default     = "16.6"
+  default     = "16.9"
 }
 
 variable "aurora_min_capacity" {

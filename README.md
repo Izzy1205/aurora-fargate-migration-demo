@@ -136,7 +136,7 @@ gitignored anyway.
 | Owner tag | `terraform/terraform.tfvars`, GitHub var `OWNER` |
 
 Also check that the Aurora PostgreSQL version in `terraform/variables.tf`
-(`aurora_engine_version`, default `16.6`) is offered in your region. Scaling to
+(`aurora_engine_version`, default `16.9`) is offered in your region. Scaling to
 0 ACU needs 16.3 or newer on the 16 line:
 
 ```
