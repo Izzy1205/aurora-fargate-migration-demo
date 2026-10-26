@@ -19,6 +19,11 @@ variable "github_subject_prefixes" {
   default     = []
 }
 
+variable "plan_environment" {
+  description = "GitHub environment for the plan job in deploy.yml. No reviewer, main only."
+  type        = string
+}
+
 variable "infra_environment" {
   description = "GitHub environment for the terraform apply job."
   type        = string
@@ -42,4 +47,10 @@ variable "state_bucket_name" {
 variable "state_key" {
   description = "State object key of the main stack."
   type        = string
+}
+
+variable "plans_prefix" {
+  description = "Key prefix in the state bucket where deploy.yml keeps saved plans."
+  type        = string
+  default     = "plans"
 }

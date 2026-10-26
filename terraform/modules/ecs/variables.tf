@@ -78,3 +78,8 @@ variable "log_retention_days" {
   type        = number
   default     = 7
 }
+
+variable "permissions_boundary_arn" {
+  description = "Permissions boundary for every IAM role this module creates."
+  type        = string
+}

@@ -31,6 +31,12 @@ variable "github_repo" {
   }
 }
 
+variable "github_plan_environment" {
+  description = "GitHub environment the deploy.yml plan job runs in. No reviewer, main only."
+  type        = string
+  default     = "production-infra-plan"
+}
+
 variable "github_infra_environment" {
   description = "GitHub environment the terraform apply job runs in."
   type        = string
