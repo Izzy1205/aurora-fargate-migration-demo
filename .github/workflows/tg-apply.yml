@@ -1,0 +1,87 @@
+name: tg-apply
+
+# Called by deploy.yml once per unit, after tg-plan. Waits for review in the
+# <env>-infra environment, then applies the exact saved plan with the
+# terraform role. A saved plan refuses to apply if the Terraform version,
+# backend or providers differ from the plan job, or if the state changed
+# since the plan was made.
+on:
+  workflow_call:
+    inputs:
+      env:
+        type: string
+        required: true
+      unit:
+        type: string
+        required: true
+      plan_key:
+        type: string
+        required: true
+      plan_sha256:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.17.0"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  apply:
+    name: apply ${{ inputs.env }}/${{ inputs.unit }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}-infra
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
+        shell: bash
+    env:
+      # Terragrunt still evaluates the unit's inputs on apply, so these have
+      # to be set. A saved plan ignores them and applies what was reviewed.
+      MIGDEMO_OWNER: ${{ vars.OWNER }}
+      MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
+      MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
+      MIGDEMO_MOCKS_ON_PLAN: "false"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_REGION: ${{ vars.AWS_REGION }}
+      UNIT_DIR: environments/${{ inputs.env }}/${{ inputs.unit }}
+      PLAN_KEY: ${{ inputs.plan_key }}
+      PLAN_SHA256: ${{ inputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same Terraform and Terragrunt versions, backend and lock file as the
+      # plan job.
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: ./.github/actions/setup-terragrunt
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - name: fetch and check the reviewed plan
+        working-directory: ${{ runner.temp }}
+        run: |
+          aws s3 cp "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" tfplan --only-show-errors
+          echo "${PLAN_SHA256}  tfplan" | sha256sum --check --strict
+
+      - name: apply the reviewed plan
+        run: |
+          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
+            -- apply -no-color "$RUNNER_TEMP/tfplan"
+
+      - name: remove the saved plan
+        if: ${{ always() }}
+        run: aws s3 rm "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" --only-show-errors || true
