@@ -44,8 +44,8 @@ variable "state_bucket_name" {
   type        = string
 }
 
-variable "state_key" {
-  description = "State object key of the main stack."
+variable "state_key_prefix" {
+  description = "Key prefix that holds one environment's unit states, as <prefix>/<unit>/terraform.tfstate."
   type        = string
 }
 

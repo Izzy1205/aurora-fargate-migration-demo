@@ -24,13 +24,13 @@ data "aws_iam_policy_document" "plan" {
   statement {
     sid       = "StateObjectRead"
     actions   = ["s3:GetObject"]
-    resources = ["arn:${local.part}:s3:::${var.state_bucket_name}/${var.state_key}"]
+    resources = ["arn:${local.part}:s3:::${var.state_bucket_name}/${var.state_key_prefix}/*/terraform.tfstate"]
   }
 
   statement {
     sid       = "StateLock"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["arn:${local.part}:s3:::${var.state_bucket_name}/${var.state_key}.tflock"]
+    resources = ["arn:${local.part}:s3:::${var.state_bucket_name}/${var.state_key_prefix}/*/terraform.tfstate.tflock"]
   }
 
   # Write only, no delete. The apply job checks the plan's sha256 against the
@@ -48,7 +48,7 @@ resource "aws_iam_role_policy" "plan" {
   policy = data.aws_iam_policy_document.plan.json
 }
 
-# Apply role, used by the infra job in the production-infra environment.
+# Apply role, used by the apply jobs in the <env>-infra environment.
 # Can't read DB credentials, edit the CI roles or the OIDC provider, or make a
 # role that isn't capped by the workload boundary.
 resource "aws_iam_role" "apply" {
@@ -202,7 +202,7 @@ resource "aws_iam_role_policy" "apply" {
   policy = data.aws_iam_policy_document.apply.json
 }
 
-# Deploy role, used by the release job in the production-app environment.
+# Deploy role, used by the release job in the <env>-app environment.
 # Pushes images, runs the Flyway task, rolls the service. Can't change
 # infrastructure or read the secret.
 resource "aws_iam_role" "deploy" {

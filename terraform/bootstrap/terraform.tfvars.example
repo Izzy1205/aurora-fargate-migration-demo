@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars (gitignored) and fill in.
-aws_region                  = "us-east-1"
+aws_region                  = "us-east-2"
 owner                       = "izzy"
 github_repo                 = "REPLACE-ME-github-user/aurora-fargate-migration-demo"
 state_bucket_name           = "REPLACE-ME-tfstate-bucket"
