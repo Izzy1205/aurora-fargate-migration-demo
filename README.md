@@ -25,8 +25,8 @@ flowchart LR
     vpce -.-> cw[CloudWatch Logs]
 
     subgraph gha[GitHub Actions]
-        pr[pr.yml and deploy.yml plan job<br/>plan role, read only]
-        infra[deploy.yml infra job<br/>terraform role, applies the saved plan]
+        pr[pr.yml and deploy.yml plan jobs<br/>plan role, read only]
+        infra[deploy.yml apply jobs, one per unit<br/>terraform role, applies the saved plan]
         rel[deploy.yml release job<br/>deploy role]
     end
 
@@ -46,9 +46,10 @@ separate jobs with separate IAM roles, and neither can do the other's job.
 
 | Thing | Owner | How it changes |
 |---|---|---|
-| VPC, subnets, security groups, endpoints | Terraform | `deploy.yml` infra job |
-| Aurora, ALB, ECS cluster, ECR, log groups, budget | Terraform | `deploy.yml` infra job |
-| Task definition shape (CPU, memory, env, secrets) | Terraform | `deploy.yml` infra job |
+| VPC, subnets, security groups, endpoints | Terraform, `network` unit | `deploy.yml` network apply job |
+| Aurora | Terraform, `data` unit | `deploy.yml` data apply job |
+| ALB, ECS cluster, ECR, log groups, budget | Terraform, `app` unit | `deploy.yml` app apply job |
+| Task definition shape (CPU, memory, env, secrets) | Terraform, `app` unit | `deploy.yml` app apply job |
 | Which image a task runs | Pipeline | release job registers a new revision |
 | Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run by the release job |
 | DB master password | RDS | RDS creates and rotates it in Secrets Manager |
@@ -58,18 +59,18 @@ The CI roles:
 
 | Role | Used by | Can | Can't |
 |---|---|---|---|
-| `migdemo-demo-github-plan` | `pr.yml`, deploy plan job (`production-infra-plan` env) | read the account and state, write saved plans under `plans/` in the state bucket | write anything else, read the DB secret |
-| `migdemo-demo-github-terraform` | infra job, `production-infra` env | create and change the stack | read the DB secret, run tasks, touch the CI roles, create a role without the workload boundary |
-| `migdemo-demo-github-deploy` | release job, `production-app` env | push to ECR, register task defs, run the migrate task, update the service | change infra, read the DB secret |
+| `migdemo-testing-github-plan` | `pr.yml`, deploy plan and outputs jobs (`testing-infra-plan` env) | read the account and state, write saved plans under `plans/` in the state bucket | write anything else, read the DB secret |
+| `migdemo-testing-github-terraform` | apply jobs, `testing-infra` env | create and change the stack | read the DB secret, run tasks, touch the CI roles, create a role without the workload boundary |
+| `migdemo-testing-github-deploy` | release job, `testing-app` env | push to ECR, register task defs, run the migrate task, update the service | change infra, read the DB secret |
 
 The ECS execution roles can pull their own image, write their own logs and
 read the DB secret to inject it. The task roles have no policies at all,
 since neither container calls AWS.
 
-Every role the main stack creates carries a permissions boundary,
-`migdemo-demo-workload-boundary`, which bootstrap owns. It only allows ECR
+Every role the Terragrunt units create carries a permissions boundary,
+`migdemo-testing-workload-boundary`, which bootstrap owns. It only allows ECR
 pulls, writing to the project's log groups and reading the RDS managed secret.
-The terraform role can only create or change a `migdemo-demo-*` role if it has
+The terraform role can only create or change a `migdemo-testing-*` role if it has
 that boundary, can't remove or edit the boundary, and can only pass those
 roles to ECS tasks and VPC flow logs. So even if it attached
 AdministratorAccess to one of them, that role still couldn't do more than the
@@ -107,8 +108,12 @@ releases look like. Flyway doesn't read that folder.
 ```
 .github/workflows/      pr.yml (checks + read-only plan), deploy.yml, codeql.yml
 .github/dependabot.yml  weekly version bumps
-terraform/              main stack (network, database, registry, ecs, budget)
-terraform/bootstrap/    OIDC provider and CI roles, applied by hand
+terraform/root.hcl                  remote state, provider and backend for every unit
+terraform/layers/{network,data,app} thin root modules, one per unit
+terraform/modules/                  the shared modules (network, database, registry, ecs, budget, github_oidc)
+terraform/environments/_envcommon/  what each unit is: source, dependencies, mocks, common inputs
+terraform/environments/<env>/       env.hcl (sizes, CIDR, region) and one folder per unit
+terraform/bootstrap/                OIDC provider and CI roles, plain Terraform, applied by hand
 db/migrations/          Flyway migrations
 db/future/              contract steps, not applied
 db/Dockerfile           Flyway image with the migrations baked in
@@ -116,23 +121,48 @@ app/                    FastAPI app, tests, Dockerfile
 scripts/                helpers the release job calls
 ```
 
+## Environments
+
+The stack is split into three Terragrunt units per environment, applied in
+order: `network` (VPC, subnets, security groups, endpoints), `data` (Aurora)
+and `app` (ECR, ALB, ECS, log groups, budget). Each unit has its own state at
+`aurora-fargate-migration-demo/<env>/<unit>/terraform.tfstate` in the state
+bucket. The per-env folders only pick sizes; all the Terraform lives in
+`terraform/layers` and `terraform/modules`.
+
+| Env | Status |
+|---|---|
+| `testing` | Deployed by `deploy.yml`. Same sizes as the original demo: one AZ for the endpoints, Aurora 0 to 2 ACU with auto-pause, 2 app tasks. |
+| `stage` | Not deployed. `env.hcl` only, checked in CI against mock outputs. |
+| `production` | Not deployed. `env.hcl` only, checked in CI against mock outputs. |
+
+Deploying stage or production would need its own state bucket, a bootstrap
+apply with that `environment`, its three GitHub environments, and the env
+added to the `deploy.yml` choice list. The budget is account wide, so two envs
+in one account would each create one.
+
+Before Terragrunt, the whole stack lived in one root with its state at
+`aurora-fargate-migration-demo/terraform.tfstate`. That stack was destroyed
+before the move, so nothing was migrated and nothing reads that key any more.
+The bootstrap state key did not change.
+
 ## Setup
 
-You need Terraform 1.9+, AWS CLI v2 and admin credentials for the one-time
-bootstrap. None of these values are secrets, but the tfvars and backend files
-are gitignored anyway.
+You need Terraform 1.11+, Terragrunt 1.2.1 (what CI pins), AWS CLI v2 and
+admin credentials for the one-time bootstrap. None of these values are
+secrets, but the tfvars and backend files are gitignored anyway.
 
 | Value | Goes in |
 |---|---|
-| Region | `terraform.tfvars`, `bootstrap/terraform.tfvars`, `backend.hcl`, var `AWS_REGION` |
-| State bucket | `backend.hcl`, `bootstrap/terraform.tfvars`, var `TF_STATE_BUCKET` |
+| Region | `aws_region` in `environments/<env>/env.hcl`, `bootstrap/terraform.tfvars`, var `AWS_REGION`. All three must match. |
+| State bucket | `backend.hcl` (bootstrap only), `bootstrap/terraform.tfvars`, var `TF_STATE_BUCKET`, or `TF_STATE_BUCKET` in your shell for local Terragrunt runs |
 | GitHub repo (`owner/name`) | `bootstrap/terraform.tfvars` |
-| Budget email | `terraform.tfvars`, var `BUDGET_EMAIL` |
-| Your IP as a /32 | `terraform.tfvars`, var `ALB_INGRESS_CIDRS` (JSON, e.g. `["203.0.113.10/32"]`) |
-| Owner tag | `terraform.tfvars`, var `OWNER` |
+| Budget email | var `BUDGET_EMAIL`, or `MIGDEMO_BUDGET_EMAIL` in your shell |
+| Your IP as a /32 | var `ALB_INGRESS_CIDRS`, or `MIGDEMO_ALB_INGRESS_CIDRS` in your shell (JSON, e.g. `["203.0.113.10/32"]`) |
+| Owner tag | var `OWNER`, or `MIGDEMO_OWNER` in your shell |
 
 Check that the Aurora version (`aurora_engine_version` in
-`terraform/variables.tf`, default `16.9`) is offered in your region. Scale to
+`terraform/environments/<env>/env.hcl`, `16.9` in testing) is offered in your region. Scale to
 zero needs 16.3 or newer on the 16 line.
 
 ```
@@ -159,8 +189,9 @@ aws s3api put-public-access-block --bucket <state-bucket> \
 
 Run this locally with admin credentials. It's the only Terraform that doesn't
 go through the pipeline. Re-run it whenever `terraform/bootstrap` or
-`modules/github_oidc` changes, and before the next deploy, since the main
-stack expects the boundary policy to exist.
+`modules/github_oidc` changes, and before the next deploy, since the
+Terragrunt units expect the boundary policy to exist. Set `aws_region` in
+`bootstrap/terraform.tfvars` to the region in `environments/testing/env.hcl`.
 
 ```
 cd terraform
@@ -177,7 +208,7 @@ terraform output
 If the account already has a GitHub OIDC provider, set
 `create_github_oidc_provider = false`. If the plan job fails with "Not
 authorized to perform sts:AssumeRoleWithWebIdentity", GitHub is sending the
-immutable subject format; see the comment in `terraform.tfvars.example`.
+immutable subject format; see the comment in `bootstrap/terraform.tfvars.example`.
 
 ### 3. GitHub
 
@@ -185,28 +216,37 @@ immutable subject format; see the comment in `terraform.tfvars.example`.
   ones in the table above, plus the three role ARNs from step 2 as
   `AWS_PLAN_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN`.
   No AWS keys go in GitHub.
-- Environments `production-infra` and `production-app`, each with a required
+- Environments `testing-infra` and `testing-app`, each with a required
   reviewer and deployments limited to `main`. The role trust policies only
   accept tokens from these environments.
-- Environment `production-infra-plan`, deployments limited to `main`, no
-  reviewer. The deploy plan job uses it to get the plan role.
+- Environment `testing-infra-plan`, deployments limited to `main`, no
+  reviewer. The deploy plan and outputs jobs use it to get the plan role.
 - Branch protection on `main`: require a PR and the `pr` checks.
 
 ### 4. First deploy
 
-`deploy.yml` is manual for now. Run it from the Actions tab on `main`. The
-plan job runs first. Its summary shows the plan, and the readable plan is also
-uploaded as the `terraform-plan` artifact (kept 5 days). Read it before you
-approve `production-infra`. The infra job then applies that exact saved plan,
-not a new one. If anything changed the state in between, the apply fails and
-you run deploy again.
+`deploy.yml` is manual for now. Run it from the Actions tab on `main` and
+pick the env (only `testing` is offered). It goes one unit at a time:
+network, then data, then app. For each unit the plan job runs first, against
+the real outputs of the units before it. Its summary shows the plan, and the
+readable plan is also uploaded as the `terraform-plan-<env>-<unit>` artifact
+(kept 5 days). Read it before you approve `testing-infra`. The apply job then
+applies that exact saved plan, not a new one. If anything changed the state
+in between, the apply fails and you run deploy again. A unit with no changes
+skips its apply, so a run asks for between zero and three infra approvals.
+Every apply also waits for the image scan.
 
-The binary plan goes to `plans/<run>/tfplan` in the state bucket, not the
-artifact, because this repo is public and a binary plan can hold real values.
-The artifact has its sha256, and the infra job refuses to apply a file that
-doesn't match.
+Why not one `terragrunt run --all plan` up front: data and app would be
+planned before network exists, so their plans would be built on mock outputs
+and couldn't be applied as reviewed. Planning each unit right after the one
+before it is applied keeps every saved plan exact.
 
-The infra job takes 10 to 15 minutes (mostly Aurora), then the release job
+The binary plan goes to `plans/<run>/<env>/<unit>/tfplan` in the state
+bucket, not the artifact, because this repo is public and a binary plan can
+hold real values. The artifact has its sha256, and the apply job refuses to
+apply a file that doesn't match.
+
+The data apply takes 10 to 15 minutes (Aurora), then the release job
 pushes the images, runs the migrations and starts two app tasks, one in each
 AZ. The run summary
 prints the app URL. Confirm the budget subscription email AWS sends you.
@@ -224,8 +264,8 @@ trigger for `main` at the top of `deploy.yml`.
    then V3, then confirms every existing row still has `priority` NULL. Walk
    through the migration itself: nullable column, `NOT VALID` check,
    `lock_timeout`.
-3. Merge, run deploy, check the plan in the run summary (no changes), approve
-   `production-infra` and then `production-app`.
+3. Merge, run deploy, check the three plans in the run summary (no changes,
+   so no infra approval is asked for), then approve `testing-app`.
 4. Flyway runs V3 in the private subnets, then the app rolls. The old tasks
    keep serving until the new ones are healthy.
 5. Refresh. Every row shows `standard (default, NULL in DB)`. Nothing was
@@ -264,7 +304,7 @@ docker run --rm --network host \
 ## Cost
 
 Not free tier (Aurora never is). New account credits cover it easily, but
-check your balance. Rough us-east-1 numbers while it's up:
+check your balance. Rough us-east-2 numbers while it's up:
 
 | Item | Approx. |
 |---|---|
@@ -289,15 +329,27 @@ There's no destroy workflow, on purpose. From your machine with admin
 credentials:
 
 ```
-cd terraform
-terraform init -backend-config=backend.hcl
-terraform plan -destroy -out=destroy.tfplan
-terraform apply destroy.tfplan
+export TF_STATE_BUCKET=<state-bucket> TF_STATE_REGION=<bucket-region>
+export MIGDEMO_OWNER=<owner> MIGDEMO_BUDGET_EMAIL=<email>
+export MIGDEMO_ALB_INGRESS_CIDRS='["203.0.113.10/32"]'
+export MIGDEMO_MOCKS_ON_PLAN=false
+cd terraform/environments/testing
+# Reverse order: app, then data, then network. In Git Bash, pwd -W gives a
+# Windows path that terraform.exe understands.
+for unit in app data network; do
+  terragrunt run --working-dir "$unit" -- plan -destroy -out="$(pwd -W)/$unit.destroy.tfplan"
+  terragrunt run --working-dir "$unit" -- apply "$(pwd -W)/$unit.destroy.tfplan"
+  rm "$unit.destroy.tfplan"
+done
 ```
+
+Each plan is shown before its apply, and Terraform asks nothing more for a
+saved plan, so stop the loop (Ctrl+C) if a plan looks wrong.
 
 ECR repos use `force_delete` and the cluster skips its final snapshot so
 destroy doesn't hang on either. Both are demo-only settings. If you're done for
-good, destroy `terraform/bootstrap` the same way and delete the state bucket
+good, destroy `terraform/bootstrap` with plain `terraform plan -destroy` and
+`terraform apply` from that folder, then delete the state bucket
 (empty all object versions first).
 
 Things to check in the region afterwards:
@@ -306,12 +358,12 @@ Things to check in the region afterwards:
 - [ ] Secrets Manager: no `rds!cluster-...` secret (deleted with the cluster)
 - [ ] ECS: no clusters or running tasks
 - [ ] EC2 > Load Balancers and Target Groups: empty
-- [ ] VPC: the `migdemo-demo` VPC and its endpoints are gone
+- [ ] VPC: the `migdemo-testing` VPC and its endpoints are gone
 - [ ] EC2 > Network Interfaces: nothing left from endpoints or tasks
 - [ ] EC2 > Elastic IPs: none (this stack creates none, check anyway)
-- [ ] ECR: no `migdemo-demo/*` repos
-- [ ] CloudWatch Logs: no `/ecs/migdemo-demo/*`, `/aws/rds/cluster/migdemo-demo-*`, or flow log groups
-- [ ] IAM: `migdemo-demo-*` roles gone (after bootstrap destroy as well)
+- [ ] ECR: no `migdemo-testing/*` repos
+- [ ] CloudWatch Logs: no `/ecs/migdemo-testing/*`, `/aws/rds/cluster/migdemo-testing-*`, or flow log groups
+- [ ] IAM: `migdemo-testing-*` roles gone (after bootstrap destroy as well)
 - [ ] Budgets: the demo budget is gone, or keep it on purpose
 - [ ] S3: state bucket deleted, or kept on purpose
 - [ ] Billing > Bills the next day: nothing still accruing
@@ -320,8 +372,11 @@ Things to check in the region afterwards:
 
 Every PR to `main` runs:
 
-- `terraform fmt`, `validate` and `tflint`, then a plan from the read-only role
-  posted as a PR comment
+- `terraform fmt`, `validate` on bootstrap and each layer, `tflint`,
+  `terragrunt hcl fmt` and `terragrunt hcl validate --inputs --strict` across
+  every env, then a testing plan of each unit from the read-only role posted
+  as a PR comment. Units whose dependencies aren't applied yet are planned
+  against mock outputs, so that plan is for review only.
 - Checkov on the Terraform. Skipped checks are listed with reasons in
   `.checkov.yaml`
 - Gitleaks over the full git history, not just the diff
@@ -340,6 +395,17 @@ CRITICAL stops the release, and what gets pushed is the exact image that was
 scanned. Dependabot watches the Python pins, both Dockerfiles, the Actions
 and the Terraform providers.
 
+Dependabot bumps the lock files in `terraform/layers` and `terraform/modules`,
+but the ones Terragrunt actually uses are committed in each unit folder under
+`terraform/environments`. All nine are the same file. After a provider bump:
+
+```
+cd terraform/layers/network
+terraform init -backend=false -upgrade
+terraform providers lock -platform=linux_amd64 -platform=windows_amd64 -platform=darwin_arm64
+for d in ../../environments/*/*/; do cp .terraform.lock.hcl "$d"; done
+```
+
 Trivy's action is pinned to a commit SHA rather than a tag because its tags
 were hijacked in March 2026 to steal CI secrets (GHSA-69fq-xp46-6x23).
 
@@ -347,8 +413,14 @@ To run the same checks locally:
 
 ```
 terraform -chdir=terraform fmt -check -recursive
-terraform -chdir=terraform init -backend=false && terraform -chdir=terraform validate
+for d in bootstrap layers/network layers/data layers/app; do
+  terraform -chdir="terraform/$d" init -backend=false && terraform -chdir="terraform/$d" validate
+done
 (cd terraform && tflint --init && tflint --recursive --config "$PWD/.tflint.hcl")
+(cd terraform && terragrunt hcl fmt --check)
+(cd terraform/environments && MIGDEMO_OWNER=x MIGDEMO_BUDGET_EMAIL=x@example.com \
+  MIGDEMO_ALB_INGRESS_CIDRS='["203.0.113.10/32"]' \
+  terragrunt hcl validate --inputs --strict && terragrunt list --dag --tree)
 checkov --config-file .checkov.yaml
 actionlint
 gitleaks git .

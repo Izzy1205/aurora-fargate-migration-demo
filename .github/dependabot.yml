@@ -30,10 +30,13 @@ updates:
       actions-minor:
         update-types: [minor, patch]
 
+  # The committed lock files live in each Terragrunt unit folder under
+  # terraform/environments, which Dependabot can't update. After a provider
+  # bump here, refresh them with `terraform providers lock` (see README).
   - package-ecosystem: terraform
     directories:
-      - /terraform
       - /terraform/bootstrap
+      - /terraform/layers/*
       - /terraform/modules/*
     schedule:
       interval: weekly
