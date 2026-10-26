@@ -1,7 +1,8 @@
-# Plan role, used by pull requests. Read only.
+# Plan role, used by pull requests and by the plan job in deploy.yml.
+# Read only, except it can drop a saved plan under plans/ in the state bucket.
 resource "aws_iam_role" "plan" {
   name                 = "${local.p}-github-plan"
-  description          = "terraform plan from pull requests. Read only."
+  description          = "terraform plan from pull requests and deploy.yml. Read only plus saved plans."
   assume_role_policy   = data.aws_iam_policy_document.trust["plan"].json
   max_session_duration = 3600
 }
@@ -31,6 +32,14 @@ data "aws_iam_policy_document" "plan" {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["arn:${local.part}:s3:::${var.state_bucket_name}/${var.state_key}.tflock"]
   }
+
+  # Write only, no delete. The apply job checks the plan's sha256 against the
+  # plan job's output, so an object written by anything else won't be applied.
+  statement {
+    sid       = "SavedPlansWrite"
+    actions   = ["s3:PutObject"]
+    resources = [local.plans_prefix]
+  }
 }
 
 resource "aws_iam_role_policy" "plan" {
@@ -40,7 +49,8 @@ resource "aws_iam_role_policy" "plan" {
 }
 
 # Apply role, used by the infra job in the production-infra environment.
-# Can't read DB credentials or edit the CI roles or the OIDC provider.
+# Can't read DB credentials, edit the CI roles or the OIDC provider, or make a
+# role that isn't capped by the workload boundary.
 resource "aws_iam_role" "apply" {
   name                 = "${local.p}-github-terraform"
   description          = "terraform apply on main. Owns infrastructure, never schema or credentials."
@@ -48,9 +58,10 @@ resource "aws_iam_role" "apply" {
   max_session_duration = 3600
 }
 
-# PowerUserAccess covers every non-IAM service the stack uses. Too broad for
-# real use; I'd replace it with a policy generated from CloudTrail by IAM
-# Access Analyzer.
+# PowerUserAccess covers every non-IAM service the stack uses. Still broader
+# than it needs to be. The next step is a policy generated from CloudTrail by
+# IAM Access Analyzer after a full apply and destroy, which I haven't done yet.
+# IAM is handled separately below.
 resource "aws_iam_role_policy_attachment" "apply_poweruser" {
   role       = aws_iam_role.apply.name
   policy_arn = "arn:${local.part}:iam::aws:policy/PowerUserAccess"
@@ -59,16 +70,45 @@ resource "aws_iam_role_policy_attachment" "apply_poweruser" {
 data "aws_iam_policy_document" "apply" {
   source_policy_documents = [data.aws_iam_policy_document.deny_db_secret.json]
 
+  # Writes that create or widen a role only work if the role carries the
+  # workload boundary.
   statement {
-    sid = "ManageProjectRoles"
+    sid = "ManageProjectRolesWithBoundary"
     actions = [
-      "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateAssumeRolePolicy",
-      "iam:TagRole", "iam:UntagRole", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
-      "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PassRole",
+      "iam:CreateRole", "iam:PutRolePermissionsBoundary",
+      "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+    ]
+    resources = [local.stack_roles]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.workload_boundary.arn]
+    }
+  }
+
+  statement {
+    sid = "ReadAndTidyProjectRoles"
+    actions = [
       "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies",
       "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole",
+      "iam:TagRole", "iam:UntagRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
+      "iam:UpdateAssumeRolePolicy", "iam:DeleteRole",
     ]
-    resources = ["arn:${local.part}:iam::${local.account}:role/${local.p}-*"]
+    resources = [local.stack_roles]
+  }
+
+  # Task definitions pass the ECS roles, the flow log passes its own role.
+  # Nothing else (Lambda, EC2, and so on) can be handed a project role.
+  statement {
+    sid       = "PassProjectRolesToStackServices"
+    actions   = ["iam:PassRole"]
+    resources = [local.stack_roles]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com"]
+    }
   }
 
   statement {
@@ -77,11 +117,75 @@ data "aws_iam_policy_document" "apply" {
     resources = ["arn:${local.part}:iam::${local.account}:role/aws-service-role/*"]
   }
 
+  # The denies below hold even if someone later attaches a broader policy.
+
   statement {
     sid       = "NoTouchingCiIdentity"
     effect    = "Deny"
     actions   = ["iam:*"]
     resources = [local.ci_roles, local.oidc_arn]
+  }
+
+  statement {
+    sid    = "NoRoleWithoutBoundary"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole", "iam:PutRolePermissionsBoundary",
+      "iam:PutRolePolicy", "iam:AttachRolePolicy",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.workload_boundary.arn]
+    }
+  }
+
+  statement {
+    sid       = "NoRemovingBoundary"
+    effect    = "Deny"
+    actions   = ["iam:DeleteRolePermissionsBoundary", "iam:DeleteUserPermissionsBoundary"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "NoEditingBoundaryPolicy"
+    effect = "Deny"
+    actions = [
+      "iam:CreatePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicy",
+      "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
+      "iam:TagPolicy", "iam:UntagPolicy",
+    ]
+    resources = [aws_iam_policy.workload_boundary.arn]
+  }
+
+  statement {
+    sid       = "NoAdminManagedPolicies"
+    effect    = "Deny"
+    actions   = ["iam:AttachRolePolicy"]
+    resources = ["*"]
+    condition {
+      test     = "ArnLike"
+      variable = "iam:PolicyARN"
+      values = [
+        "arn:${local.part}:iam::aws:policy/AdministratorAccess*",
+        "arn:${local.part}:iam::aws:policy/IAMFullAccess",
+        "arn:${local.part}:iam::aws:policy/PowerUserAccess",
+        "arn:${local.part}:iam::aws:policy/job-function/*",
+      ]
+    }
+  }
+
+  statement {
+    sid       = "NoPassingRolesElsewhere"
+    effect    = "Deny"
+    actions   = ["iam:PassRole"]
+    resources = ["*"]
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com"]
+    }
   }
 
   statement {

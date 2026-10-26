@@ -25,8 +25,8 @@ flowchart LR
     vpce -.-> cw[CloudWatch Logs]
 
     subgraph gha[GitHub Actions]
-        pr[pr.yml<br/>plan role, read only]
-        infra[deploy.yml infra job<br/>terraform role]
+        pr[pr.yml and deploy.yml plan job<br/>plan role, read only]
+        infra[deploy.yml infra job<br/>terraform role, applies the saved plan]
         rel[deploy.yml release job<br/>deploy role]
     end
 
@@ -52,19 +52,28 @@ separate jobs with separate IAM roles, and neither can do the other's job.
 | Which image a task runs | Pipeline | release job registers a new revision |
 | Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run by the release job |
 | DB master password | RDS | RDS creates and rotates it in Secrets Manager |
-| OIDC provider and the three CI roles | `terraform/bootstrap` | applied by hand, once |
+| OIDC provider, the three CI roles, the workload boundary | `terraform/bootstrap` | applied by hand |
 
 The CI roles:
 
 | Role | Used by | Can | Can't |
 |---|---|---|---|
-| `migdemo-demo-github-plan` | `pr.yml` | read the account and state | write anything, read the DB secret |
-| `migdemo-demo-github-terraform` | infra job, `production-infra` env | create and change the stack | read the DB secret, run tasks, touch the CI roles |
+| `migdemo-demo-github-plan` | `pr.yml`, deploy plan job (`production-infra-plan` env) | read the account and state, write saved plans under `plans/` in the state bucket | write anything else, read the DB secret |
+| `migdemo-demo-github-terraform` | infra job, `production-infra` env | create and change the stack | read the DB secret, run tasks, touch the CI roles, create a role without the workload boundary |
 | `migdemo-demo-github-deploy` | release job, `production-app` env | push to ECR, register task defs, run the migrate task, update the service | change infra, read the DB secret |
 
 The ECS execution roles can pull their own image, write their own logs and
 read the DB secret to inject it. The task roles have no policies at all,
 since neither container calls AWS.
+
+Every role the main stack creates carries a permissions boundary,
+`migdemo-demo-workload-boundary`, which bootstrap owns. It only allows ECR
+pulls, writing to the project's log groups and reading the RDS managed secret.
+The terraform role can only create or change a `migdemo-demo-*` role if it has
+that boundary, can't remove or edit the boundary, and can only pass those
+roles to ECS tasks and VPC flow logs. So even if it attached
+AdministratorAccess to one of them, that role still couldn't do more than the
+boundary allows.
 
 I kept the CI roles in their own Terraform root so the pipeline can't edit its
 own permissions. The DB password only exists inside the running containers.
@@ -149,7 +158,9 @@ aws s3api put-public-access-block --bucket <state-bucket> \
 ### 2. Bootstrap the CI roles
 
 Run this locally with admin credentials. It's the only Terraform that doesn't
-go through the pipeline.
+go through the pipeline. Re-run it whenever `terraform/bootstrap` or
+`modules/github_oidc` changes, and before the next deploy, since the main
+stack expects the boundary policy to exist.
 
 ```
 cd terraform
@@ -177,18 +188,32 @@ immutable subject format; see the comment in `terraform.tfvars.example`.
 - Environments `production-infra` and `production-app`, each with a required
   reviewer and deployments limited to `main`. The role trust policies only
   accept tokens from these environments.
+- Environment `production-infra-plan`, deployments limited to `main`, no
+  reviewer. The deploy plan job uses it to get the plan role.
 - Branch protection on `main`: require a PR and the `pr` checks.
 
 ### 4. First deploy
 
 `deploy.yml` is manual for now. Run it from the Actions tab on `main`. The
-infra job takes 10 to 15 minutes (mostly Aurora), then the release job pushes
-the images, runs the migrations and starts one app task. The run summary
+plan job runs first. Its summary shows the plan, and the readable plan is also
+uploaded as the `terraform-plan` artifact (kept 5 days). Read it before you
+approve `production-infra`. The infra job then applies that exact saved plan,
+not a new one. If anything changed the state in between, the apply fails and
+you run deploy again.
+
+The binary plan goes to `plans/<run>/tfplan` in the state bucket, not the
+artifact, because this repo is public and a binary plan can hold real values.
+The artifact has its sha256, and the infra job refuses to apply a file that
+doesn't match.
+
+The infra job takes 10 to 15 minutes (mostly Aurora), then the release job
+pushes the images, runs the migrations and starts two app tasks, one in each
+AZ. The run summary
 prints the app URL. Confirm the budget subscription email AWS sends you.
 
 Terraform creates the ECS service with 0 tasks and a placeholder image tag,
 since the images don't exist yet on the first run. The release job sets the
-real image and scales it to 1. To deploy on every merge instead, add a `push`
+real image and scales it to 2. To deploy on every merge instead, add a `push`
 trigger for `main` at the top of `deploy.yml`.
 
 ## Running the demo
@@ -199,10 +224,10 @@ trigger for `main` at the top of `deploy.yml`.
    then V3, then confirms every existing row still has `priority` NULL. Walk
    through the migration itself: nullable column, `NOT VALID` check,
    `lock_timeout`.
-3. Merge, run deploy, approve `production-infra` (no-op apply) and then
-   `production-app`.
-4. Flyway runs V3 in the private subnets, then the app rolls. The old task
-   keeps serving the whole time.
+3. Merge, run deploy, check the plan in the run summary (no changes), approve
+   `production-infra` and then `production-app`.
+4. Flyway runs V3 in the private subnets, then the app rolls. The old tasks
+   keep serving until the new ones are healthy.
 5. Refresh. Every row shows `standard (default, NULL in DB)`. Nothing was
    rewritten.
 6. Talk through `db/future/`: backfill next release, enforce the one after.
@@ -245,7 +270,7 @@ check your balance. Rough us-east-1 numbers while it's up:
 |---|---|
 | Aurora Serverless v2 | ~$0.12 per ACU-hour when active, $0 compute when paused (after 5 idle minutes), plus storage |
 | ALB | ~$0.023/hour plus traffic and public IPv4 |
-| Fargate, one 0.25 vCPU / 0.5 GB task | ~$0.01/hour |
+| Fargate, two 0.25 vCPU / 0.5 GB tasks | ~$0.02/hour |
 | 4 interface endpoints, one AZ | ~$0.04/hour (double with `single_az_endpoints = false`) |
 | RDS managed secret | $0.40/month, prorated |
 | ECR, CloudWatch Logs | cents |
@@ -341,8 +366,10 @@ This is sized for a demo with fake data. The gaps are deliberate:
 
 - A NAT gateway or egress proxy per AZ if the app ever calls outside APIs, and
   endpoints in every AZ.
-- An Aurora reader in a second AZ, two or more app tasks, and min ACU above 0
-  so nobody waits on a resume.
+- An Aurora reader in a second AZ and min ACU above 0 so nobody waits on a
+  resume. The app already runs a task in each AZ, but with the default
+  `single_az_endpoints = true` the endpoints only live in the first AZ, so the
+  second AZ's task still depends on it.
 - HTTPS: a domain, an ACM cert, a modern TLS policy, HTTP redirected. WAF in
   front with the managed rule groups and rate limiting.
 - Separate DB roles: one that owns the schema for migrations and one for the
@@ -352,9 +379,9 @@ This is sized for a demo with fake data. The gaps are deliberate:
   AWS Backup plan.
 - Performance Insights, Container Insights, ALB access logs and CloudWatch
   alarms.
-- Every action pinned to a SHA, a hand-written policy instead of
-  `PowerUserAccess` on the terraform role, and a narrower plan role
-  (`ReadOnlyAccess` can still read S3 objects).
+- Every action pinned to a SHA, a policy generated from CloudTrail instead of
+  `PowerUserAccess` on the terraform role (IAM is already scoped and bounded),
+  and a narrower plan role (`ReadOnlyAccess` can still read S3 objects).
 
 The deploy role decides what code runs next to the DB secret, so code review
 and the environment reviewers are the real control on releases. The skips in

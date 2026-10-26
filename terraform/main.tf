@@ -1,6 +1,13 @@
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
 locals {
   name_prefix = "${var.project}-${var.environment}"
   app_port    = 8000
+
+  # Created by terraform/bootstrap. The terraform role can only create roles
+  # that carry it, so every role in this stack gets it.
+  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${local.name_prefix}-workload-boundary"
 }
 
 module "network" {
@@ -11,6 +18,8 @@ module "network" {
   app_port            = local.app_port
   alb_ingress_cidrs   = var.alb_ingress_cidrs
   single_az_endpoints = var.single_az_endpoints
+
+  permissions_boundary_arn = local.permissions_boundary_arn
 }
 
 module "database" {
@@ -42,6 +51,8 @@ module "ecs" {
   alb_security_group_id = module.network.alb_security_group_id
   app_security_group_id = module.network.app_security_group_id
   app_port              = local.app_port
+
+  permissions_boundary_arn = local.permissions_boundary_arn
 
   app_image                = "${module.registry.repository_urls["app"]}:${var.app_image_tag}"
   migration_image          = "${module.registry.repository_urls["migrate"]}:${var.app_image_tag}"

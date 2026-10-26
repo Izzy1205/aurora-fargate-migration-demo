@@ -27,6 +27,13 @@ locals {
   # RDS-managed secrets are always named rds!<resource>-<id>.
   rds_secrets = "arn:${local.part}:secretsmanager:*:${local.account}:secret:rds!*"
   ci_roles    = "arn:${local.part}:iam::${local.account}:role/${local.p}-github-*"
+
+  # Roles the main stack creates. Each must carry the workload boundary
+  # (boundary.tf), which the main stack finds by name.
+  stack_roles = "arn:${local.part}:iam::${local.account}:role/${local.p}-*"
+
+  # Saved plans from deploy.yml, next to the state in the same bucket.
+  plans_prefix = "arn:${local.part}:s3:::${var.state_bucket_name}/${var.plans_prefix}/*"
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -42,9 +49,11 @@ data "aws_iam_openid_connect_provider" "github" {
   url = "https://${local.oidc_host}"
 }
 
-# Trust policy builder: one role per GitHub "sub" claim.
+# Trust policy builder, based on the GitHub "sub" claim.
 #   pull_request jobs           -> repo:OWNER/NAME:pull_request
 #   jobs with environment: X    -> repo:OWNER/NAME:environment:X
+# The plan role is also trusted from the plan environment, so the deploy
+# workflow can make its saved plan without waiting on a reviewer.
 #
 # GitHub can send the repo part of "sub" in two forms: the classic
 # repo:OWNER/NAME, or the immutable repo:OWNER@ID/NAME@ID form newer repos
@@ -55,9 +64,9 @@ locals {
 
 data "aws_iam_policy_document" "trust" {
   for_each = {
-    plan   = "pull_request"
-    apply  = "environment:${var.infra_environment}"
-    deploy = "environment:${var.app_environment}"
+    plan   = ["pull_request", "environment:${var.plan_environment}"]
+    apply  = ["environment:${var.infra_environment}"]
+    deploy = ["environment:${var.app_environment}"]
   }
 
   statement {
@@ -74,7 +83,7 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = [for p in local.subject_prefixes : "${p}:${each.value}"]
+      values   = flatten([for p in local.subject_prefixes : [for s in each.value : "${p}:${s}"]])
     }
   }
 }

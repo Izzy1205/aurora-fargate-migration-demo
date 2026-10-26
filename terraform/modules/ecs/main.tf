@@ -99,15 +99,23 @@ resource "aws_ecs_task_definition" "migration" {
   }])
 }
 
-# Starts at zero tasks. CI picks the revision and scales it up after the
+# Starts at zero tasks. CI picks the revision and scales it to 2 after the
 # migration, so Terraform ignores those fields.
+#
+# Fargate spreads a service's tasks across the AZs of its subnets, so with two
+# private subnets the 2 tasks land one per AZ. Rebalancing moves them back if
+# an AZ outage left both in one AZ. During a deploy ECS starts 2 new tasks
+# before stopping the old ones (100% min healthy, 200% max).
 resource "aws_ecs_service" "app" {
-  name                              = "${var.name_prefix}-app"
-  cluster                           = aws_ecs_cluster.this.id
-  task_definition                   = aws_ecs_task_definition.app.arn
-  desired_count                     = 0
-  launch_type                       = "FARGATE"
-  health_check_grace_period_seconds = 30
+  name                               = "${var.name_prefix}-app"
+  cluster                            = aws_ecs_cluster.this.id
+  task_definition                    = aws_ecs_task_definition.app.arn
+  desired_count                      = 0
+  launch_type                        = "FARGATE"
+  health_check_grace_period_seconds  = 30
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  availability_zone_rebalancing      = "ENABLED"
 
   deployment_circuit_breaker {
     enable   = true

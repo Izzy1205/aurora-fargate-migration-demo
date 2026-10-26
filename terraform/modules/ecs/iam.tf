@@ -28,8 +28,9 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
 resource "aws_iam_role" "execution" {
   for_each = local.task_kinds
 
-  name               = "${var.name_prefix}-${each.key}-execution"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+  name                 = "${var.name_prefix}-${each.key}-execution"
+  assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "execution" {
@@ -77,6 +78,7 @@ resource "aws_iam_role_policy" "execution" {
 resource "aws_iam_role" "task" {
   for_each = local.task_kinds
 
-  name               = "${var.name_prefix}-${each.key}-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+  name                 = "${var.name_prefix}-${each.key}-task"
+  assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
