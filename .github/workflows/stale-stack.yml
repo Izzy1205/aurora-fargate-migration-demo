@@ -1,0 +1,97 @@
+name: stale-stack
+
+# Daily check for a testing stack that was left running. Read only: it signs
+# in with the plan role and only runs describe calls. If testing has been up
+# for more than a day it posts a warning on the run. It never fails the job
+# and never changes anything.
+on:
+  schedule:
+    - cron: "0 13 * * *"  # 13:00 UTC, about 9 AM Eastern
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stale-stack
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check testing stack age
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The plan role trusts this environment's OIDC subject. Its branch rule
+    # allows main, which is where scheduled runs start.
+    environment: testing-infra-plan
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENV_NAME: testing
+      MAX_AGE_HOURS: "24"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-stale-${{ github.run_id }}
+
+      # VPCs and clusters have no create time, so age comes from the Aurora
+      # cluster and the ALB. The VPC is only checked to see if anything is up.
+      - name: check age
+        shell: bash
+        run: |
+          project=$(sed -nE 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' terraform/root.hcl | head -n1)
+          if [ -z "$project" ]; then
+            echo "::error::Could not read project from terraform/root.hcl"
+            exit 1
+          fi
+          prefix="${project}-${ENV_NAME}"
+
+          vpcs=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Project,Values=${project}" "Name=tag:Environment,Values=${ENV_NAME}" \
+            --query 'Vpcs[].VpcId' --output text)
+          db_time=$(aws rds describe-db-clusters \
+            --query "DBClusters[?starts_with(DBClusterIdentifier, '${prefix}-')].ClusterCreateTime | [0]" \
+            --output text)
+          alb_time=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?starts_with(LoadBalancerName, '${prefix}-')].CreatedTime | [0]" \
+            --output text)
+
+          oldest=""
+          for t in "$db_time" "$alb_time"; do
+            if [ -n "$t" ] && [ "$t" != "None" ]; then
+              s=$(date -u -d "$t" +%s)
+              if [ -z "$oldest" ] || [ "$s" -lt "$oldest" ]; then
+                oldest=$s
+              fi
+            fi
+          done
+
+          if [ -z "$vpcs" ] && [ -z "$oldest" ]; then
+            echo "${ENV_NAME} is down"
+            echo "${ENV_NAME} is down." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ -z "$oldest" ]; then
+            msg="${ENV_NAME} VPC ${vpcs} exists but has no Aurora cluster or ALB, so its age is unknown. Check for a half-finished teardown."
+            echo "::warning::${msg}"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          age_hours=$(( ($(date -u +%s) - oldest) / 3600 ))
+          if [ "$age_hours" -ge "$MAX_AGE_HOURS" ]; then
+            msg="${ENV_NAME} has been up about ${age_hours} hours. Run scripts/teardown.sh ${ENV_NAME} if you're done with it."
+            echo "::warning::${msg}"
+          else
+            msg="${ENV_NAME} is up, about ${age_hours} hours old. Under the ${MAX_AGE_HOURS} hour limit."
+            echo "$msg"
+          fi
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
