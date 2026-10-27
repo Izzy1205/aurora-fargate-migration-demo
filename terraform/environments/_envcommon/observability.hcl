@@ -23,6 +23,11 @@ dependency "app" {
     app_desired_count       = 2
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
+
+  # The ARN suffix outputs are new. If app was applied before they existed,
+  # a PR plan fills them from the mocks above instead of failing. Only for
+  # the commands that allow mocks, so deploy.yml still sees real values.
+  mock_outputs_merge_strategy_with_state = "shallow"
 }
 
 dependency "data" {

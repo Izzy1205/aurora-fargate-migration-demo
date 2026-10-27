@@ -6,6 +6,7 @@ name: deploy
 #   scan ------------------------------.
 #   network plan -> network apply -> data plan -> data apply -> app plan ->
 #     app apply -> outputs -> release
+#               \-> observability plan -> observability apply
 #
 # plan (tg-plan.yml): read-only plan role in <env>-infra-plan, no reviewer.
 #   Plans against the real outputs of the units already applied, uploads the
@@ -15,6 +16,9 @@ name: deploy
 #   scan, so a bad image stops the run before anything changes. Skipped when
 #   that unit's plan has no changes.
 # outputs: reads the app unit's outputs with the plan role.
+# observability: alarms and dashboard, planned once app is applied. It runs
+#   alongside outputs and release, so the release doesn't wait for the
+#   monitoring approval, and nothing in release depends on it.
 # release: pushes the scanned images, runs Flyway, rolls the service with the
 #   deploy role (<env>-app env).
 #
@@ -22,7 +26,7 @@ name: deploy
 # and app plans would be made before network is applied, so they'd be built
 # on mock or stale outputs, and the saved plans would no longer match what
 # gets applied. Planning each unit right after its dependencies are applied
-# keeps every saved plan exact. The cost is up to three approvals per run.
+# keeps every saved plan exact. The cost is up to four approvals per run.
 #
 # Manual for now. For deploys on every merge add:
 #   push:
@@ -182,6 +186,38 @@ jobs:
       unit: app
       plan_key: ${{ needs.app-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.app-plan.outputs.plan_sha256 }}
+
+  observability-plan:
+    needs: [app-plan, app-apply, scan]
+    if: >-
+      !cancelled() &&
+      needs.app-plan.result == 'success' &&
+      needs.scan.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.app-apply.result)
+    uses: ./.github/workflows/tg-plan.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: observability
+
+  observability-apply:
+    needs: [observability-plan, scan]
+    if: >-
+      !cancelled() &&
+      needs.scan.result == 'success' &&
+      needs.observability-plan.result == 'success' &&
+      needs.observability-plan.outputs.has_changes == 'true'
+    uses: ./.github/workflows/tg-apply.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: observability
+      plan_key: ${{ needs.observability-plan.outputs.plan_key }}
+      plan_sha256: ${{ needs.observability-plan.outputs.plan_sha256 }}
 
   # The release job needs these names and IDs. Read with the read-only plan
   # role after the last apply. The app unit passes through the network values

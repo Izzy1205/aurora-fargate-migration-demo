@@ -16,7 +16,7 @@ on:
         type: string
         required: true
       unit:
-        description: Unit folder inside that env (network, data or app).
+        description: Unit folder inside that env (network, data, app or observability).
         type: string
         required: true
     outputs:
