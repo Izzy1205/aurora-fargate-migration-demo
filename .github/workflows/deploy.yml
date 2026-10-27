@@ -15,6 +15,11 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Docs and the local teardown script don't change what's deployed.
+    paths-ignore:
+      - README.md
+      - docs/**
+      - scripts/teardown.sh
   workflow_dispatch:
     inputs:
       env:
