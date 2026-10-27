@@ -58,14 +58,14 @@ jobs:
 
       # Same Terraform and Terragrunt versions, backend and lock file as the
       # plan job.
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - uses: ./.github/actions/setup-terragrunt
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}

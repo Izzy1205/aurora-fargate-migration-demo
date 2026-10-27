@@ -16,7 +16,7 @@ on:
         type: string
         required: true
       unit:
-        description: Unit folder inside that env (network, data or app).
+        description: Unit folder inside that env (network, data, app or observability).
         type: string
         required: true
     outputs:
@@ -68,14 +68,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - uses: ./.github/actions/setup-terragrunt
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}

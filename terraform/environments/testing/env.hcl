@@ -20,4 +20,8 @@ locals {
 
   app_desired_count = 2 # one task per AZ
   budget_limit_usd  = 10
+
+  # Alarm thresholds. Empty means the module defaults, which are sized for
+  # this env (see modules/observability/variables.tf).
+  alarm_thresholds = {}
 }

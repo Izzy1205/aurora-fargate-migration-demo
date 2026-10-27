@@ -50,3 +50,15 @@ output "alb_dns_name" {
   description = "Public DNS name of the ALB."
   value       = aws_lb.this.dns_name
 }
+
+# Alarm dimensions for the observability unit. CloudWatch wants the ARN
+# suffix ("app/<name>/<id>" and "targetgroup/<name>/<id>"), not the full ARN.
+output "alb_arn_suffix" {
+  description = "ALB ARN suffix, the LoadBalancer dimension in CloudWatch."
+  value       = aws_lb.this.arn_suffix
+}
+
+output "target_group_arn_suffix" {
+  description = "App target group ARN suffix, the TargetGroup dimension in CloudWatch."
+  value       = aws_lb_target_group.app.arn_suffix
+}
