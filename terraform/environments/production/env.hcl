@@ -21,11 +21,20 @@ locals {
   app_desired_count = 4
   budget_limit_usd  = 50
 
+  # WAF on the ALB. Count only for the first rollout, same as stage. More
+  # users behind shared NAT addresses, so a higher per-IP limit.
+  waf_rate_limit = 2000
+  waf_count_only = true
+
   # Alarm thresholds, on top of the module defaults. More traffic means more
   # stray 5xx, and max 8 ACU allows well over 1,000 Postgres connections.
   alarm_thresholds = {
     elb_5xx_count      = 20
     target_5xx_count   = 20
     aurora_connections = 800
+    # More users means more junk traffic hitting the managed rules.
+    waf_blocked_requests = 500
+    # Bigger backlog is normal at peak; still well under the retention.
+    queue_oldest_message_seconds = 600
   }
 }

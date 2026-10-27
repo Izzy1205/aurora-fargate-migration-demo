@@ -4,10 +4,13 @@
 locals {
   region = data.aws_region.current.region
 
-  lb  = var.alb_arn_suffix
-  tg  = var.target_group_arn_suffix
-  ecs = ["ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_service_name]
-  db  = ["DBClusterIdentifier", var.aurora_cluster_identifier]
+  lb    = var.alb_arn_suffix
+  tg    = var.target_group_arn_suffix
+  ecs   = ["ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_service_name]
+  db    = ["DBClusterIdentifier", var.aurora_cluster_identifier]
+  queue = ["QueueName", var.payment_queue_name]
+  dlq   = ["QueueName", var.payment_dlq_name]
+  waf   = ["WebACL", var.waf_web_acl_name, "Region", local.region, "Rule", "ALL"]
 
   widgets = [
     {
@@ -59,6 +62,31 @@ locals {
       stat  = "Minimum"
       metrics = [
         concat(["AWS/RDS", "FreeableMemory"], local.db),
+      ]
+    },
+    {
+      title = "WAF requests (sum per 5 min)"
+      stat  = "Sum"
+      metrics = [
+        concat(["AWS/WAFV2", "AllowedRequests"], local.waf),
+        concat(["AWS/WAFV2", "BlockedRequests"], local.waf),
+        concat(["AWS/WAFV2", "CountedRequests"], local.waf),
+      ]
+    },
+    {
+      title = "Payment queue depth (main and DLQ)"
+      stat  = "Maximum"
+      metrics = [
+        concat(["AWS/SQS", "ApproximateNumberOfMessagesVisible"], local.queue),
+        concat(["AWS/SQS", "ApproximateNumberOfMessagesNotVisible"], local.queue),
+        concat(["AWS/SQS", "ApproximateNumberOfMessagesVisible"], local.dlq),
+      ]
+    },
+    {
+      title = "Payment queue oldest message (seconds)"
+      stat  = "Maximum"
+      metrics = [
+        concat(["AWS/SQS", "ApproximateAgeOfOldestMessage"], local.queue),
       ]
     },
   ]

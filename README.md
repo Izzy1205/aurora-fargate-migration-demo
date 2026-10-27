@@ -10,19 +10,20 @@ the whole time, and the new code treats NULL as "not set yet".
 
 ```mermaid
 flowchart LR
-    user([Browser from your IP only]) -->|HTTP 80| alb[ALB<br/>public subnets]
+    user([Browser from your IP only]) -->|HTTP 80| waf[WAF web ACL] --> alb[ALB<br/>public subnets]
 
     subgraph vpc[VPC 10.40.0.0/16, no NAT gateway]
         alb -->|8000| app[ECS Fargate<br/>app service<br/>private subnets]
         mig[ECS Fargate<br/>Flyway task<br/>run once per release] -->|5432| db[(Aurora PostgreSQL<br/>Serverless v2<br/>private subnets)]
         app -->|5432| db
-        app -.-> vpce[VPC endpoints<br/>ECR, Secrets Manager, Logs, S3]
+        app -.-> vpce[VPC endpoints<br/>ECR, Secrets Manager, Logs, SQS, S3]
         mig -.-> vpce
     end
 
     vpce -.-> sm[Secrets Manager<br/>RDS managed secret]
     vpce -.-> ecr[ECR<br/>app and migrate images]
     vpce -.-> cw[CloudWatch Logs]
+    vpce -.-> sqs[SQS payment-requests<br/>and its DLQ]
 
     subgraph gha[GitHub Actions]
         pr[pr.yml and deploy.yml plan jobs<br/>plan role, read only]
@@ -36,7 +37,7 @@ flowchart LR
 ```
 
 The private subnets have no route to the internet. Tasks reach ECR, Secrets
-Manager and CloudWatch Logs through interface endpoints and pull image layers
+Manager, CloudWatch Logs and SQS through interface endpoints and pull image layers
 through the S3 gateway endpoint. No NAT gateway.
 
 ## Who owns what
@@ -48,11 +49,12 @@ separate jobs with separate IAM roles, and neither can do the other's job.
 |---|---|---|
 | VPC, subnets, security groups, endpoints | Terraform, `network` unit | `deploy.yml` network apply job |
 | Aurora | Terraform, `data` unit | `deploy.yml` data apply job |
-| ALB, ECS cluster, ECR, log groups, budget | Terraform, `app` unit | `deploy.yml` app apply job |
+| ALB, WAF, ECS cluster, ECR, log groups, payment queues and their KMS key, budget | Terraform, `app` unit | `deploy.yml` app apply job |
 | CloudWatch alarms, alarm topic and its KMS key, dashboard | Terraform, `observability` unit | `deploy.yml` observability apply job |
 | Task definition shape (CPU, memory, env, secrets) | Terraform, `app` unit | `deploy.yml` app apply job |
 | Which image a task runs | Pipeline | release job registers a new revision |
 | Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run by the release job |
+| Payment consumer, retries in code, idempotency | App team | app code, not this repo's Terraform |
 | DB master password | RDS | RDS creates and rotates it in Secrets Manager |
 | OIDC provider, the three CI roles, the workload boundary | `terraform/bootstrap` | applied by hand |
 
@@ -65,12 +67,14 @@ The CI roles:
 | `migdemo-testing-github-deploy` | release job, `testing-app` env | push to ECR, register task defs, run the migrate task, update the service | change infra, read the DB secret |
 
 The ECS execution roles can pull their own image, write their own logs and
-read the DB secret to inject it. The task roles have no policies at all,
-since neither container calls AWS.
+read the DB secret to inject it. The app task role can send, receive, delete
+and read attributes on the payment queue, and use its key only through SQS.
+The migrate task role has no policies.
 
 Every role the Terragrunt units create carries a permissions boundary,
 `migdemo-testing-workload-boundary`, which bootstrap owns. It only allows ECR
-pulls, writing to the project's log groups and reading the RDS managed secret.
+pulls, writing to the project's log groups, reading the RDS managed secret and
+using the project's SQS queues and their key through SQS.
 The terraform role can only create or change a `migdemo-testing-*` role if it has
 that boundary, can't remove or edit the boundary, and can only pass those
 roles to ECS tasks and VPC flow logs. So even if it attached
@@ -111,7 +115,7 @@ releases look like. Flyway doesn't read that folder.
 .github/dependabot.yml  weekly version bumps
 terraform/root.hcl                  remote state, provider and backend for every unit
 terraform/layers/{network,data,app,observability} thin root modules, one per unit
-terraform/modules/                  the shared modules (network, database, registry, ecs, budget, observability, github_oidc)
+terraform/modules/                  the shared modules (network, database, registry, ecs, waf, queue, budget, observability, github_oidc)
 terraform/environments/_envcommon/  what each unit is: source, dependencies, mocks, common inputs
 terraform/environments/<env>/       env.hcl (sizes, CIDR, region) and one folder per unit
 terraform/bootstrap/                OIDC provider and CI roles, plain Terraform, applied by hand
@@ -126,7 +130,7 @@ scripts/                helpers the release job calls
 
 The stack is split into four Terragrunt units per environment, applied in
 order: `network` (VPC, subnets, security groups, endpoints), `data` (Aurora),
-`app` (ECR, ALB, ECS, log groups, budget) and `observability` (alarms, the
+`app` (ECR, ALB and WAF, ECS, log groups, payment queues, budget) and `observability` (alarms, the
 alarm topic, a dashboard). Each unit has its own state at
 `aurora-fargate-migration-demo/<env>/<unit>/terraform.tfstate` in the state
 bucket. The per-env folders only pick sizes; all the Terraform lives in
@@ -211,6 +215,10 @@ terraform plan -out=tfplan
 terraform apply tfplan
 terraform output
 ```
+
+The payment queue branch widened the workload boundary
+(`modules/github_oidc/boundary.tf`). Apply bootstrap again before the next
+deploy, or the app task role can't use the queue.
 
 If the account already has a GitHub OIDC provider, set
 `create_github_oidc_provider = false`. If the plan job fails with "Not
@@ -311,9 +319,51 @@ docker run --rm --network host \
   -e FLYWAY_USER=postgres -e FLYWAY_PASSWORD=local demo-migrate migrate
 ```
 
+## WAF
+
+The ALB has a regional WAF web ACL (`migdemo-testing-alb`), default allow,
+with these rules:
+
+| Priority | Rule | What it does |
+|---|---|---|
+| 10 | `AWSManagedRulesAmazonIpReputationList` | blocks IPs AWS has seen attacking |
+| 20 | `rate-limit-per-ip` | blocks an IP that sends more than `waf_rate_limit` requests in 5 minutes (1000 in testing) |
+| 30 | `AWSManagedRulesCommonRuleSet` | the usual OWASP style checks |
+| 40 | `AWSManagedRulesKnownBadInputsRuleSet` | known bad patterns, including Log4j |
+| 50 | `AWSManagedRulesSQLiRuleSet` | SQL injection |
+
+`waf_count_only` in `env.hcl` turns every rule into count: matches are logged
+and counted, nothing is blocked. Testing blocks from the start, since only
+your own IP can reach the ALB. Stage and production start in count. Read the
+WAF logs for a while, then set it to `false`.
+
+ALB health checks go from the ALB straight to the tasks and never pass
+through the WAF, so `/health` can't be blocked by it.
+
+Logs go to the `aws-waf-logs-migdemo-testing` log group, 7 day retention,
+with the `authorization` and `cookie` headers redacted.
+
+## Payment queue
+
+The `app` unit creates `migdemo-testing-payment-requests` and a dead letter
+queue, `migdemo-testing-payment-requests-dlq`. A message that's received
+`payment_max_receive_count` times (5) without being deleted moves to the DLQ,
+which keeps it 14 days. Both are encrypted with `alias/migdemo-testing-payments`
+and refuse anything not sent over TLS. The app gets the queue URL as
+`PAYMENT_QUEUE_URL`.
+
+This is the platform guardrail only. The app team writes the consumer and
+owns idempotency: every message carries an idempotency key, and a repeat of a
+key is treated as already done. SQS delivers at least once, so repeats will
+happen. Nothing is redriven from the DLQ automatically; look at the message,
+fix the cause, then redrive it from the SQS console.
+
+The service ignores task definition changes from Terraform, so running
+tasks get `PAYMENT_QUEUE_URL` on the next release, not on the app apply.
+
 ## Monitoring
 
-The `observability` unit adds eleven CloudWatch alarms, one SNS topic they
+The `observability` unit adds fourteen CloudWatch alarms, one SNS topic they
 all send to, and a dashboard called `migdemo-testing` (CloudWatch >
 Dashboards). Every alarm emails on ALARM and again on OK, so you get a
 "recovered" mail too. Thresholds are inputs; the defaults in
@@ -341,9 +391,13 @@ subscription is gone and creates it again, which sends a new email.
 | `aurora-acu-high` | Aurora above 90% of max ACU for 15 minutes | It can't scale any further. Raise `aurora_max_capacity` if the load is expected. |
 | `aurora-freeable-memory-low` | Aurora freeable memory under 256 MiB for 10 minutes | Only happens at max ACU, since Serverless v2 scales up before memory gets tight. Same fix as ACU. |
 | `aurora-connections-high` | more than 100 open connections for 10 minutes | The app opens one short connection per request, so this means a leak or a traffic spike. Max 2 ACU allows roughly 400. |
+| `waf-blocked-spike` | the WAF blocks 100 or more requests in 5 minutes | Look at the WAF logs or the sampled requests on the web ACL. An attack, or a rule catching real traffic (then exclude that rule). Stays quiet in count mode. |
+| `payment-dlq-not-empty` | any message in the payment DLQ | A payment request failed every retry. Read it, fix the cause, redrive. |
+| `payment-queue-oldest-message` | the oldest payment request is over 5 minutes old for 10 minutes | The consumer is down, stuck or too slow. Check the app tasks and logs. |
 
-Missing data: no 5xx data means no 5xx, and when Aurora auto-pauses it stops
-reporting memory and connections, so those count as fine. No task or healthy
+Missing data: no 5xx data means no 5xx and no WAF block data means nothing
+was blocked. An idle queue and a paused Aurora (which stops reporting memory
+and connections) count as fine too. No task or healthy
 host data means no tasks are running, so those two count as breaching.
 
 Expected noise:
@@ -378,17 +432,23 @@ check your balance. Rough us-east-2 numbers while it's up:
 | Aurora Serverless v2 | ~$0.12 per ACU-hour when active, $0 compute when paused (after 5 idle minutes), plus storage |
 | ALB | ~$0.023/hour plus traffic and public IPv4 |
 | Fargate, two 0.25 vCPU / 0.5 GB tasks | ~$0.02/hour |
-| 4 interface endpoints, one AZ | ~$0.04/hour (double with `single_az_endpoints = false`) |
+| 5 interface endpoints, one AZ | ~$0.05/hour (double with `single_az_endpoints = false`) |
+| WAF web ACL with 5 rules | $5 per ACL plus $1 per rule a month, prorated hourly (~$10/month), plus $0.60 per million requests |
+| WAF logs | $0.50 per GB ingested, cents at demo traffic |
+| SQS | first million requests a month free, so close to $0 |
 | RDS managed secret | $0.40/month, prorated |
 | ECR, CloudWatch Logs | cents |
-| 11 CloudWatch alarms | ~$0.10 each a month, prorated. The first 10 in the account are free tier, so ~$0.10 to $1.10/month |
+| 14 CloudWatch alarms | ~$0.10 each a month, prorated. The first 10 in the account are free tier, so ~$0.40 to $1.40/month |
 | CloudWatch dashboard | free if it's one of the account's first 3, otherwise $3/month |
-| KMS key for the alarm topic | $1/month prorated hourly, nothing once scheduled for deletion |
+| KMS keys for the alarm topic and the payment queues | $1 each a month prorated hourly, nothing once scheduled for deletion |
 | SNS email | first 1,000 emails a month free |
 
 Call it $0.10 to $0.40 an hour depending on how busy the DB is, or a few
 dollars for a day left idle. Skipping the NAT gateway is what keeps it this
 low.
+
+The WAF alone is about $10 a month, the whole testing budget, if the stack
+stays up all month. Torn down after a demo it's cents.
 
 The $10 monthly budget emails at 80% of actual and 100% of forecast, account
 wide. It only alerts, it doesn't stop anything. Tearing down is the real cost
@@ -429,14 +489,16 @@ Things to check in the region afterwards:
 - [ ] Secrets Manager: no `rds!cluster-...` secret (deleted with the cluster)
 - [ ] ECS: no clusters or running tasks
 - [ ] EC2 > Load Balancers and Target Groups: empty
+- [ ] WAF & Shield > Web ACLs (the stack's region): no `migdemo-testing-alb`
+- [ ] SQS: no `migdemo-testing-payment-requests` or its `-dlq`
 - [ ] VPC: the `migdemo-testing` VPC and its endpoints are gone
 - [ ] EC2 > Network Interfaces: nothing left from endpoints or tasks
 - [ ] EC2 > Elastic IPs: none (this stack creates none, check anyway)
 - [ ] ECR: no `migdemo-testing/*` repos
-- [ ] CloudWatch Logs: no `/ecs/migdemo-testing/*`, `/aws/rds/cluster/migdemo-testing-*`, or flow log groups
+- [ ] CloudWatch Logs: no `/ecs/migdemo-testing/*`, `/aws/rds/cluster/migdemo-testing-*`, `aws-waf-logs-migdemo-testing`, or flow log groups. Settings > Resource policies: no `migdemo-testing-waf-logs`
 - [ ] CloudWatch: no `migdemo-testing-*` alarms, no `migdemo-testing` dashboard
 - [ ] SNS: no `migdemo-testing-alarms` topic or subscription
-- [ ] KMS: the `migdemo-testing alarm topic` key shows "Pending deletion" (7 days, no charge while pending)
+- [ ] KMS: the `migdemo-testing alarm topic` and `migdemo-testing payment queues` keys show "Pending deletion" (7 days, no charge while pending)
 - [ ] IAM: `migdemo-testing-*` roles gone (after bootstrap destroy as well)
 - [ ] Budgets: the demo budget is gone, or keep it on purpose
 - [ ] S3: state bucket deleted, or kept on purpose
@@ -520,8 +582,9 @@ This is sized for a demo with fake data. The gaps are deliberate:
   resume. The app already runs a task in each AZ, but with the default
   `single_az_endpoints = true` the endpoints only live in the first AZ, so the
   second AZ's task still depends on it.
-- HTTPS: a domain, an ACM cert, a modern TLS policy, HTTP redirected. WAF in
-  front with the managed rule groups and rate limiting.
+- HTTPS: a domain, an ACM cert, a modern TLS policy, HTTP redirected. The WAF
+  is already in front; production would also add a geo or bot control rule
+  if the traffic calls for it.
 - Separate DB roles: one that owns the schema for migrations and one for the
   app with only the grants it needs, ideally with IAM auth (already turned on).
 - Customer managed KMS keys for Aurora, the secret, ECR and logs.

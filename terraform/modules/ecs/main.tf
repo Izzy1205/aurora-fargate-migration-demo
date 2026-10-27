@@ -40,7 +40,7 @@ resource "aws_ecs_task_definition" "app" {
     environment = concat(local.db_env, [
       { name = "DB_SSLMODE", value = "require" },
       { name = "PORT", value = tostring(var.app_port) },
-    ])
+    ], var.app_environment)
     # Injected by the ECS agent at task start from the RDS-managed secret.
     # The values never pass through Terraform, GitHub or the image.
     secrets = [

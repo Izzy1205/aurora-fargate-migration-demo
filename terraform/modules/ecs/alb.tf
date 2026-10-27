@@ -1,6 +1,9 @@
 # Demo ALB: HTTP only, locked to the CIDRs in alb_ingress_cidrs.
-# Production: HTTPS listener with an ACM cert, HTTP redirect, WAF, access logs.
+# Production: HTTPS listener with an ACM cert, HTTP redirect, access logs.
 resource "aws_lb" "this" {
+  # The WAF is attached in modules/waf, called from layers/app. checkov's
+  # graph doesn't follow the association across the module boundary.
+  #checkov:skip=CKV2_AWS_28:web ACL associated by modules/waf in the same unit
   name                       = "${var.name_prefix}-alb"
   load_balancer_type         = "application"
   internal                   = false

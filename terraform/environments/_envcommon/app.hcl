@@ -1,4 +1,4 @@
-# App unit (ECR, ECS, ALB, budget), shared by every environment.
+# App unit (ECR, ECS, ALB and its WAF, budget), shared by every environment.
 
 locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl")).locals
@@ -54,6 +54,9 @@ inputs = {
 
   app_desired_count = local.env.app_desired_count
   budget_limit_usd  = local.env.budget_limit_usd
+
+  waf_rate_limit = local.env.waf_rate_limit
+  waf_count_only = local.env.waf_count_only
 
   budget_email = get_env("MIGDEMO_BUDGET_EMAIL")
 }

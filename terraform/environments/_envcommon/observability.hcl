@@ -21,6 +21,9 @@ dependency "app" {
     ecs_cluster_name        = "migdemo-mock-cluster"
     app_service_name        = "migdemo-mock-app"
     app_desired_count       = 2
+    waf_web_acl_name        = "migdemo-mock-alb"
+    payment_queue_name      = "migdemo-mock-payment-requests"
+    payment_dlq_name        = "migdemo-mock-payment-requests-dlq"
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
 
@@ -45,6 +48,9 @@ inputs = {
   ecs_cluster_name        = dependency.app.outputs.ecs_cluster_name
   ecs_service_name        = dependency.app.outputs.app_service_name
   app_desired_count       = dependency.app.outputs.app_desired_count
+  waf_web_acl_name        = dependency.app.outputs.waf_web_acl_name
+  payment_queue_name      = dependency.app.outputs.payment_queue_name
+  payment_dlq_name        = dependency.app.outputs.payment_dlq_name
 
   aurora_cluster_identifier = dependency.data.outputs.aurora_cluster_identifier
 

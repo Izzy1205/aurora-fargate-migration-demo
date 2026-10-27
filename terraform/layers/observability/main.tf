@@ -20,5 +20,9 @@ module "observability" {
 
   aurora_cluster_identifier = var.aurora_cluster_identifier
 
+  waf_web_acl_name   = var.waf_web_acl_name
+  payment_queue_name = var.payment_queue_name
+  payment_dlq_name   = var.payment_dlq_name
+
   thresholds = var.alarm_thresholds
 }

@@ -22,9 +22,16 @@ locals {
   app_desired_count = 2
   budget_limit_usd  = 25
 
+  # WAF on the ALB. Count only for the first rollout: read the WAF logs for
+  # false positives, then set this to false.
+  waf_rate_limit = 1000
+  waf_count_only = true
+
   # Alarm thresholds, on top of the module defaults. Max 4 ACU allows roughly
   # 800 Postgres connections, so alert at about half.
   alarm_thresholds = {
-    aurora_connections = 400
+    aurora_connections           = 400
+    waf_blocked_requests         = 200
+    queue_oldest_message_seconds = 600
   }
 }

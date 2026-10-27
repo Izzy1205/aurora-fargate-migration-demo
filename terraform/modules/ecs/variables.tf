@@ -83,3 +83,12 @@ variable "permissions_boundary_arn" {
   description = "Permissions boundary for every IAM role this module creates."
   type        = string
 }
+
+variable "app_environment" {
+  description = "Extra plain environment variables for the app container. No secrets here, those go in secrets."
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  default = []
+}

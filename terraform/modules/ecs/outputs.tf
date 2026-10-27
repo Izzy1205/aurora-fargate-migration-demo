@@ -62,3 +62,13 @@ output "target_group_arn_suffix" {
   description = "App target group ARN suffix, the TargetGroup dimension in CloudWatch."
   value       = aws_lb_target_group.app.arn_suffix
 }
+
+output "alb_arn" {
+  description = "ALB ARN, for the WAF association."
+  value       = aws_lb.this.arn
+}
+
+output "app_task_role_name" {
+  description = "App task role name, for attaching policies from outside the module."
+  value       = aws_iam_role.task["app"].name
+}

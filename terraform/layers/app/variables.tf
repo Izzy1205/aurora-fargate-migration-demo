@@ -96,3 +96,19 @@ variable "budget_limit_usd" {
   description = "Monthly cost budget in USD."
   type        = number
 }
+
+variable "waf_rate_limit" {
+  description = "Requests one IP may send in 5 minutes before the WAF rate rule acts on it."
+  type        = number
+}
+
+variable "waf_count_only" {
+  description = "WAF counts matches instead of blocking them. For a first rollout; set per environment in env.hcl."
+  type        = bool
+}
+
+variable "payment_max_receive_count" {
+  description = "Receives before a payment request moves to the dead letter queue."
+  type        = number
+  default     = 5
+}
