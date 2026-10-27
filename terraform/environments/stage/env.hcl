@@ -30,7 +30,8 @@ locals {
   # Alarm thresholds, on top of the module defaults. Max 4 ACU allows roughly
   # 800 Postgres connections, so alert at about half.
   alarm_thresholds = {
-    aurora_connections   = 400
-    waf_blocked_requests = 200
+    aurora_connections           = 400
+    waf_blocked_requests         = 200
+    queue_oldest_message_seconds = 600
   }
 }

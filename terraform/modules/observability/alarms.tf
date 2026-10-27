@@ -15,6 +15,7 @@
 #   ECS:    AWS/ECS, ClusterName + ServiceName (no Container Insights needed)
 #   Aurora: AWS/RDS, DBClusterIdentifier
 #   WAF:    AWS/WAFV2, WebACL + Region + Rule (Rule = ALL for the whole ACL)
+#   SQS:    AWS/SQS, QueueName
 
 locals {
   lb_dims = { LoadBalancer = var.alb_arn_suffix }
@@ -23,7 +24,9 @@ locals {
     ClusterName = var.ecs_cluster_name
     ServiceName = var.ecs_service_name
   }
-  db_dims = { DBClusterIdentifier = var.aurora_cluster_identifier }
+  db_dims    = { DBClusterIdentifier = var.aurora_cluster_identifier }
+  queue_dims = { QueueName = var.payment_queue_name }
+  dlq_dims   = { QueueName = var.payment_dlq_name }
   waf_dims = {
     WebACL = var.waf_web_acl_name
     Region = data.aws_region.current.region
@@ -199,6 +202,34 @@ locals {
       datapoints  = 1
       comparison  = "GreaterThanOrEqualToThreshold"
       threshold   = local.t.waf_blocked_requests
+      missing     = "notBreaching"
+    }
+    # Any message in the DLQ is a payment request that failed every retry.
+    payment-dlq-not-empty = {
+      description = "A payment request failed every retry and is in the dead letter queue. Look at it, fix the cause, then redrive."
+      namespace   = "AWS/SQS"
+      metric      = "ApproximateNumberOfMessagesVisible"
+      statistic   = "Maximum"
+      dimensions  = local.dlq_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanThreshold"
+      threshold   = 0
+      missing     = "notBreaching"
+    }
+    # Messages sitting unread: the consumer is down, stuck or too slow.
+    payment-queue-oldest-message = {
+      description = "The oldest payment request has waited too long. The consumer is down or falling behind."
+      namespace   = "AWS/SQS"
+      metric      = "ApproximateAgeOfOldestMessage"
+      statistic   = "Maximum"
+      dimensions  = local.queue_dims
+      period      = 300
+      evaluations = 2
+      datapoints  = 2
+      comparison  = "GreaterThanThreshold"
+      threshold   = local.t.queue_oldest_message_seconds
       missing     = "notBreaching"
     }
   }

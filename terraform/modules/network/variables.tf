@@ -26,7 +26,7 @@ variable "single_az_endpoints" {
 variable "interface_endpoints" {
   description = "Interface endpoint service suffixes. These replace a NAT gateway for Fargate."
   type        = list(string)
-  default     = ["ecr.api", "ecr.dkr", "secretsmanager", "logs"]
+  default     = ["ecr.api", "ecr.dkr", "secretsmanager", "logs", "sqs"]
 }
 
 variable "flow_log_retention_days" {

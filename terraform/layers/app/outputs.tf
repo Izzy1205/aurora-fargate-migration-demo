@@ -75,3 +75,18 @@ output "waf_log_group" {
   description = "CloudWatch log group with the WAF logs."
   value       = module.waf.log_group_name
 }
+
+output "payment_queue_url" {
+  description = "Payment requests queue URL. Also set on the app as PAYMENT_QUEUE_URL."
+  value       = module.queue.queue_url
+}
+
+output "payment_queue_name" {
+  description = "Payment requests queue name. The observability unit alarms on it."
+  value       = module.queue.queue_name
+}
+
+output "payment_dlq_name" {
+  description = "Payment requests dead letter queue name."
+  value       = module.queue.dlq_name
+}

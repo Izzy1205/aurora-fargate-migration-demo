@@ -34,5 +34,7 @@ locals {
     aurora_connections = 800
     # More users means more junk traffic hitting the managed rules.
     waf_blocked_requests = 500
+    # Bigger backlog is normal at peak; still well under the retention.
+    queue_oldest_message_seconds = 600
   }
 }

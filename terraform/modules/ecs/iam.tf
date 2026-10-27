@@ -73,8 +73,9 @@ resource "aws_iam_role_policy" "execution" {
   policy = data.aws_iam_policy_document.execution[each.key].json
 }
 
-# No permissions, neither container calls AWS. They exist so the deploy
-# role's PassRole can be scoped to them.
+# No permissions here. They exist so the deploy role's PassRole can be
+# scoped to them. The app role gets its payment queue policy from
+# layers/app; the migrate role has none.
 resource "aws_iam_role" "task" {
   for_each = local.task_kinds
 
