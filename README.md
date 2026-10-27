@@ -49,6 +49,7 @@ separate jobs with separate IAM roles, and neither can do the other's job.
 | VPC, subnets, security groups, endpoints | Terraform, `network` unit | `deploy.yml` network apply job |
 | Aurora | Terraform, `data` unit | `deploy.yml` data apply job |
 | ALB, ECS cluster, ECR, log groups, budget | Terraform, `app` unit | `deploy.yml` app apply job |
+| CloudWatch alarms, alarm topic and its KMS key, dashboard | Terraform, `observability` unit | `deploy.yml` observability apply job |
 | Task definition shape (CPU, memory, env, secrets) | Terraform, `app` unit | `deploy.yml` app apply job |
 | Which image a task runs | Pipeline | release job registers a new revision |
 | Tables, columns, constraints, seed data | Flyway | `db/migrations/`, run by the release job |
@@ -109,8 +110,8 @@ releases look like. Flyway doesn't read that folder.
 .github/workflows/      pr.yml (checks + read-only plan), deploy.yml, codeql.yml
 .github/dependabot.yml  weekly version bumps
 terraform/root.hcl                  remote state, provider and backend for every unit
-terraform/layers/{network,data,app} thin root modules, one per unit
-terraform/modules/                  the shared modules (network, database, registry, ecs, budget, github_oidc)
+terraform/layers/{network,data,app,observability} thin root modules, one per unit
+terraform/modules/                  the shared modules (network, database, registry, ecs, budget, observability, github_oidc)
 terraform/environments/_envcommon/  what each unit is: source, dependencies, mocks, common inputs
 terraform/environments/<env>/       env.hcl (sizes, CIDR, region) and one folder per unit
 terraform/bootstrap/                OIDC provider and CI roles, plain Terraform, applied by hand
@@ -123,9 +124,10 @@ scripts/                helpers the release job calls
 
 ## Environments
 
-The stack is split into three Terragrunt units per environment, applied in
-order: `network` (VPC, subnets, security groups, endpoints), `data` (Aurora)
-and `app` (ECR, ALB, ECS, log groups, budget). Each unit has its own state at
+The stack is split into four Terragrunt units per environment, applied in
+order: `network` (VPC, subnets, security groups, endpoints), `data` (Aurora),
+`app` (ECR, ALB, ECS, log groups, budget) and `observability` (alarms, the
+alarm topic, a dashboard). Each unit has its own state at
 `aurora-fargate-migration-demo/<env>/<unit>/terraform.tfstate` in the state
 bucket. The per-env folders only pick sizes; all the Terraform lives in
 `terraform/layers` and `terraform/modules`.
@@ -227,13 +229,14 @@ immutable subject format; see the comment in `bootstrap/terraform.tfvars.example
 
 `deploy.yml` is manual for now. Run it from the Actions tab on `main` and
 pick the env (only `testing` is offered). It goes one unit at a time:
-network, then data, then app. For each unit the plan job runs first, against
+network, then data, then app, then observability (which runs alongside the
+release, so the release never waits on it). For each unit the plan job runs first, against
 the real outputs of the units before it. Its summary shows the plan, and the
 readable plan is also uploaded as the `terraform-plan-<env>-<unit>` artifact
 (kept 5 days). Read it before you approve `testing-infra`. The apply job then
 applies that exact saved plan, not a new one. If anything changed the state
 in between, the apply fails and you run deploy again. A unit with no changes
-skips its apply, so a run asks for between zero and three infra approvals.
+skips its apply, so a run asks for between zero and four infra approvals.
 Every apply also waits for the image scan.
 
 Why not one `terragrunt run --all plan` up front: data and app would be
@@ -249,7 +252,9 @@ apply a file that doesn't match.
 The data apply takes 10 to 15 minutes (Aurora), then the release job
 pushes the images, runs the migrations and starts two app tasks, one in each
 AZ. The run summary
-prints the app URL. Confirm the budget subscription email AWS sends you.
+prints the app URL. AWS sends two subscription emails to the budget address,
+one for the budget and one for the alarm topic. Click the link in the alarm
+one or no alarm email is ever delivered (see Monitoring).
 
 Terraform creates the ECS service with 0 tasks and a placeholder image tag,
 since the images don't exist yet on the first run. The release job sets the
@@ -264,7 +269,7 @@ trigger for `main` at the top of `deploy.yml`.
    then V3, then confirms every existing row still has `priority` NULL. Walk
    through the migration itself: nullable column, `NOT VALID` check,
    `lock_timeout`.
-3. Merge, run deploy, check the three plans in the run summary (no changes,
+3. Merge, run deploy, check the four plans in the run summary (no changes,
    so no infra approval is asked for), then approve `testing-app`.
 4. Flyway runs V3 in the private subnets, then the app rolls. The old tasks
    keep serving until the new ones are healthy.
@@ -301,6 +306,63 @@ docker run --rm --network host \
   -e FLYWAY_USER=postgres -e FLYWAY_PASSWORD=local demo-migrate migrate
 ```
 
+## Monitoring
+
+The `observability` unit adds eleven CloudWatch alarms, one SNS topic they
+all send to, and a dashboard called `migdemo-testing` (CloudWatch >
+Dashboards). Every alarm emails on ALARM and again on OK, so you get a
+"recovered" mail too. Thresholds are inputs; the defaults in
+`terraform/modules/observability/variables.tf` suit testing, and
+`alarm_thresholds` in `env.hcl` overrides any of them per env.
+
+The email goes to the budget address (`BUDGET_EMAIL`). After the first
+observability apply, AWS sends an "AWS Notification - Subscription
+Confirmation" email. Click the link in it. Until you do, the subscription
+stays "Pending confirmation" and nothing is delivered. Terraform can't
+confirm it for you. SNS deletes an unconfirmed email subscription after 48
+hours. If that happens, re-run deploy: the observability plan sees the
+subscription is gone and creates it again, which sends a new email.
+
+| Alarm (`migdemo-testing-...`) | Fires when (testing default) | What to do |
+|---|---|---|
+| `alb-5xx` | the ALB itself returns 5 or more 5xx in 5 minutes | Usually no healthy target (502/503) or a timeout (504). Check the target group health and the ECS service events. |
+| `target-5xx` | the app returns 5 or more 5xx in 5 minutes | Read the app log group `/ecs/migdemo-testing/app`. If it's DB errors, check whether Aurora is resuming or out of connections. |
+| `unhealthy-hosts` | any target fails `/health` for 2 of 3 minutes | Look at the target group's health reasons and the stopped tasks' reasons in ECS. A bad image or a crash loop shows up here first. |
+| `healthy-hosts-low` | fewer healthy targets than the service's desired count (2) for 3 minutes | Same as above. Also fires when there are no tasks at all. |
+| `ecs-tasks-low` | fewer live tasks than desired (2) for 3 minutes | Check ECS service events for placement or image pull errors. Expected when the service is at 0, see below. |
+| `ecs-cpu-high` | service CPU above 80% for 10 minutes | Real load or a hot loop. Raise the task CPU in `modules/ecs` or the task count. |
+| `ecs-memory-high` | service memory above 80% for 10 minutes | Watch for OOM kills in stopped task reasons. Raise task memory if it's real use. |
+| `aurora-cpu-high` | Aurora CPU above 80% for 10 minutes | On Serverless v2 this is a percent of the CPU at max ACU, so the cluster is close to its ceiling. Find the heavy query, or raise `aurora_max_capacity`. |
+| `aurora-acu-high` | Aurora above 90% of max ACU for 15 minutes | It can't scale any further. Raise `aurora_max_capacity` if the load is expected. |
+| `aurora-freeable-memory-low` | Aurora freeable memory under 256 MiB for 10 minutes | Only happens at max ACU, since Serverless v2 scales up before memory gets tight. Same fix as ACU. |
+| `aurora-connections-high` | more than 100 open connections for 10 minutes | The app opens one short connection per request, so this means a leak or a traffic spike. Max 2 ACU allows roughly 400. |
+
+Missing data: no 5xx data means no 5xx, and when Aurora auto-pauses it stops
+reporting memory and connections, so those count as fine. No task or healthy
+host data means no tasks are running, so those two count as breaching.
+
+Expected noise:
+
+- Terraform creates the ECS service with 0 tasks and the release scales it
+  up, so on the first deploy `ecs-tasks-low` and `healthy-hosts-low` go to
+  ALARM until the release finishes, then send OK. The same happens any time
+  the service is scaled to 0 on purpose.
+- A release that rolls the tasks can briefly trip `unhealthy-hosts`. It needs
+  2 bad minutes out of 3, which a normal roll doesn't hit.
+- Waking a paused Aurora takes about 15 seconds. If several requests in that
+  window fail, `target-5xx` can fire once and clear on the next 5 minutes.
+
+The topic is encrypted with its own KMS key (`alias/migdemo-testing-alarms`)
+rather than the AWS managed `alias/aws/sns` key. CloudWatch alarms can't
+publish to a topic that uses the AWS managed key, because its key policy
+can't be changed to let CloudWatch use it, and the alarm just fails to
+deliver. The custom key's policy lets CloudWatch encrypt messages, and the
+topic policy only accepts publishes from `migdemo-testing-*` alarms in this
+account.
+
+ECS task count uses `LiveTaskCount` from the standard `AWS/ECS` metrics, so
+Container Insights stays off (it would bill per metric per task).
+
 ## Cost
 
 Not free tier (Aurora never is). New account credits cover it easily, but
@@ -314,6 +376,10 @@ check your balance. Rough us-east-2 numbers while it's up:
 | 4 interface endpoints, one AZ | ~$0.04/hour (double with `single_az_endpoints = false`) |
 | RDS managed secret | $0.40/month, prorated |
 | ECR, CloudWatch Logs | cents |
+| 11 CloudWatch alarms | ~$0.10 each a month, prorated. The first 10 in the account are free tier, so ~$0.10 to $1.10/month |
+| CloudWatch dashboard | free if it's one of the account's first 3, otherwise $3/month |
+| KMS key for the alarm topic | $1/month prorated hourly, nothing once scheduled for deletion |
+| SNS email | first 1,000 emails a month free |
 
 Call it $0.10 to $0.40 an hour depending on how busy the DB is, or a few
 dollars for a day left idle. Skipping the NAT gateway is what keeps it this
@@ -334,9 +400,9 @@ export MIGDEMO_OWNER=<owner> MIGDEMO_BUDGET_EMAIL=<email>
 export MIGDEMO_ALB_INGRESS_CIDRS='["203.0.113.10/32"]'
 export MIGDEMO_MOCKS_ON_PLAN=false
 cd terraform/environments/testing
-# Reverse order: app, then data, then network. In Git Bash, pwd -W gives a
-# Windows path that terraform.exe understands.
-for unit in app data network; do
+# Reverse order: observability, then app, then data, then network. In Git
+# Bash, pwd -W gives a Windows path that terraform.exe understands.
+for unit in observability app data network; do
   terragrunt run --working-dir "$unit" -- plan -destroy -out="$(pwd -W)/$unit.destroy.tfplan"
   terragrunt run --working-dir "$unit" -- apply "$(pwd -W)/$unit.destroy.tfplan"
   rm "$unit.destroy.tfplan"
@@ -363,6 +429,9 @@ Things to check in the region afterwards:
 - [ ] EC2 > Elastic IPs: none (this stack creates none, check anyway)
 - [ ] ECR: no `migdemo-testing/*` repos
 - [ ] CloudWatch Logs: no `/ecs/migdemo-testing/*`, `/aws/rds/cluster/migdemo-testing-*`, or flow log groups
+- [ ] CloudWatch: no `migdemo-testing-*` alarms, no `migdemo-testing` dashboard
+- [ ] SNS: no `migdemo-testing-alarms` topic or subscription
+- [ ] KMS: the `migdemo-testing alarm topic` key shows "Pending deletion" (7 days, no charge while pending)
 - [ ] IAM: `migdemo-testing-*` roles gone (after bootstrap destroy as well)
 - [ ] Budgets: the demo budget is gone, or keep it on purpose
 - [ ] S3: state bucket deleted, or kept on purpose
@@ -397,7 +466,7 @@ and the Terraform providers.
 
 Dependabot bumps the lock files in `terraform/layers` and `terraform/modules`,
 but the ones Terragrunt actually uses are committed in each unit folder under
-`terraform/environments`. All nine are the same file. After a provider bump:
+`terraform/environments`. All twelve are the same file. After a provider bump:
 
 ```
 cd terraform/layers/network
@@ -408,12 +477,16 @@ for d in ../../environments/*/*/; do cp .terraform.lock.hcl "$d"; done
 
 Trivy's action is pinned to a commit SHA rather than a tag because its tags
 were hijacked in March 2026 to steal CI secrets (GHSA-69fq-xp46-6x23).
+`hashicorp/setup-terraform` and `aws-actions/configure-aws-credentials` are
+pinned the same way, since they install Terraform and hand out AWS
+credentials. The version is in a comment next to each SHA so Dependabot can
+still bump them. The other actions are still on major tags.
 
 To run the same checks locally:
 
 ```
 terraform -chdir=terraform fmt -check -recursive
-for d in bootstrap layers/network layers/data layers/app; do
+for d in bootstrap layers/network layers/data layers/app layers/observability; do
   terraform -chdir="terraform/$d" init -backend=false && terraform -chdir="terraform/$d" validate
 done
 (cd terraform && tflint --init && tflint --recursive --config "$PWD/.tflint.hcl")
@@ -449,9 +522,10 @@ This is sized for a demo with fake data. The gaps are deliberate:
 - Customer managed KMS keys for Aurora, the secret, ECR and logs.
 - Deletion protection, final snapshots, longer backup and log retention, an
   AWS Backup plan.
-- Performance Insights, Container Insights, ALB access logs and CloudWatch
-  alarms.
-- Every action pinned to a SHA, a policy generated from CloudTrail instead of
+- Performance Insights, Container Insights and ALB access logs. The alarms
+  email one inbox; production would page someone (PagerDuty, Opsgenie or
+  similar) and add an alarm on the 5xx rate rather than a count.
+- The rest of the actions pinned to SHAs, a policy generated from CloudTrail instead of
   `PowerUserAccess` on the terraform role (IAM is already scoped and bounded),
   and a narrower plan role (`ReadOnlyAccess` can still read S3 objects).
 
