@@ -111,9 +111,15 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # No human reviews testing or stage applies, so the plan itself has to
-      # stop anything that would delete or replace a resource. Real teardowns
-      # are done by hand, not through this pipeline.
+      # Second check on top of the reviewer. Testing applies wait for a
+      # reviewer in the testing-infra environment (tg-apply.yml), and the
+      # release job waits in testing-app. This plan job runs in
+      # <env>-infra-plan, which only has a main branch rule and no reviewer.
+      # Stage isn't deployed yet, and production isn't wired up here yet.
+      # Reviewer rules live in the GitHub environment settings, not in this
+      # repo. A reviewer can miss one destroy line in a long plan, so any
+      # delete or replace stops here. Real teardowns are done by hand with
+      # scripts/teardown.sh, not through this pipeline.
       - name: block deletes and replaces
         if: steps.plan.outputs.has_changes == 'true'
         run: |
