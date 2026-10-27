@@ -12,7 +12,7 @@ locals {
   aws_region  = local.env.aws_region
 
   # testing/network, testing/data, testing/app and so on.
-  unit_path = trimprefix(path_relative_to_include(), "environments/")
+  unit_path = trimprefix(replace(path_relative_to_include(), "\\", "/"), "environments/")
 }
 
 # One state object per unit:
