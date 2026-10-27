@@ -111,6 +111,29 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # No human reviews testing or stage applies, so the plan itself has to
+      # stop anything that would delete or replace a resource. Real teardowns
+      # are done by hand, not through this pipeline.
+      - name: block deletes and replaces
+        if: steps.plan.outputs.has_changes == 'true'
+        run: |
+          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
+            -- show -json "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/plan.json"
+          deletes=$(jq -r '.resource_changes[]
+            | select(.change.actions | index("delete"))
+            | .address' "$RUNNER_TEMP/plan.json")
+          if [ -n "$deletes" ]; then
+            echo "This plan deletes or replaces resources. Stopping."
+            echo "$deletes"
+            {
+              echo "### Blocked: ${UNIT} plan deletes or replaces resources"
+              echo '```'
+              echo "$deletes"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: save plan
         id: save
         if: steps.plan.outputs.has_changes == 'true'

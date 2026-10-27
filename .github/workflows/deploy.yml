@@ -1,37 +1,17 @@
 name: deploy
 
-# Runs one Terragrunt environment (testing is the only one deployed). Each
-# unit gets its own plan and apply, one unit at a time:
-#
-#   scan ------------------------------.
-#   network plan -> network apply -> data plan -> data apply -> app plan ->
-#     app apply -> outputs -> release
-#               \-> observability plan -> observability apply
-#
-# plan (tg-plan.yml): read-only plan role in <env>-infra-plan, no reviewer.
-#   Plans against the real outputs of the units already applied, uploads the
-#   readable plan and keeps the binary plan in the state bucket.
-# apply (tg-apply.yml): waits for review in <env>-infra, then applies the
-#   exact saved plan with the terraform role. Every apply also waits for
-#   scan, so a bad image stops the run before anything changes. Skipped when
-#   that unit's plan has no changes.
-# outputs: reads the app unit's outputs with the plan role.
-# observability: alarms and dashboard, planned once app is applied. It runs
-#   alongside outputs and release, so the release doesn't wait for the
-#   monitoring approval, and nothing in release depends on it.
-# release: pushes the scanned images, runs Flyway, rolls the service with the
-#   deploy role (<env>-app env).
-#
-# Why not "terragrunt run --all plan" and then "run --all apply": the data
-# and app plans would be made before network is applied, so they'd be built
-# on mock or stale outputs, and the saved plans would no longer match what
-# gets applied. Planning each unit right after its dependencies are applied
-# keeps every saved plan exact. The cost is up to four approvals per run.
-#
-# Manual for now. For deploys on every merge add:
-#   push:
-#     branches: [main]
+
+# Deploys one environment, one unit at a time:
+# network, data, app, then observability.
+# Each unit is planned, then the exact saved plan is applied.
+# Merges to main deploy testing automatically. Production is manual
+# and every apply waits for a reviewer.
+# Any plan that deletes or replaces a resource fails (see tg-plan.yml).
+# Teardowns are done by hand.
+# The release job pushes the scanned images, runs Flyway, and rolls the service.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       env:
