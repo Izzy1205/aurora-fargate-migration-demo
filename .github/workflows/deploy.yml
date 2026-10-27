@@ -4,14 +4,22 @@ name: deploy
 # Deploys one environment, one unit at a time:
 # network, data, app, then observability.
 # Each unit is planned, then the exact saved plan is applied.
-# Merges to main deploy testing automatically. Production is manual
-# and every apply waits for a reviewer.
+# A merge to main starts a testing deploy on its own, but each apply still
+# waits for a reviewer: the testing-infra environment for every unit and
+# testing-app for the release job. Reviewer rules live in the GitHub
+# environment settings. Production isn't wired up yet. When it is, it will
+# be started by hand and wait for reviewers too.
 # Any plan that deletes or replaces a resource fails (see tg-plan.yml).
-# Teardowns are done by hand.
+# Teardowns are done by hand with scripts/teardown.sh.
 # The release job pushes the scanned images, runs Flyway, and rolls the service.
 on:
   push:
     branches: [main]
+    # Docs and the local teardown script don't change what's deployed.
+    paths-ignore:
+      - README.md
+      - docs/**
+      - scripts/teardown.sh
   workflow_dispatch:
     inputs:
       env:
