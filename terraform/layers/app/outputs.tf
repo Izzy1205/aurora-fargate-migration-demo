@@ -1,5 +1,5 @@
-# What CI needs to run the migration and roll the service. Secret ARN only,
-# never the value.
+# What CI needs to run the migration and roll the service. deploy.yml reads
+# all of these from this one unit. Secret ARN only, never the value.
 
 output "app_url" {
   description = "Open this in the browser during the demo."
@@ -28,12 +28,12 @@ output "migration_task_family" {
 
 output "private_subnet_ids_csv" {
   description = "Private subnets, comma separated, for run-task awsvpc config."
-  value       = join(",", module.network.private_subnet_ids)
+  value       = join(",", var.private_subnet_ids)
 }
 
 output "migration_security_group_id" {
   description = "Security group for the Flyway task."
-  value       = module.network.migration_security_group_id
+  value       = var.migration_security_group_id
 }
 
 output "app_ecr_repository" {
@@ -51,12 +51,7 @@ output "migration_log_group" {
   value       = module.ecs.migration_log_group_name
 }
 
-output "db_secret_arn" {
-  description = "ARN of the RDS-managed secret (ARN only, not the value)."
-  value       = module.database.master_user_secret_arn
-}
-
-output "aurora_cluster_identifier" {
-  description = "Aurora cluster identifier."
-  value       = module.database.cluster_identifier
+output "app_desired_count" {
+  description = "Tasks to run after a release. Set per environment in env.hcl."
+  value       = var.app_desired_count
 }

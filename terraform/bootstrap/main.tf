@@ -27,7 +27,7 @@ module "github_oidc" {
   app_environment         = var.github_app_environment
   create_oidc_provider    = var.create_github_oidc_provider
   state_bucket_name       = var.state_bucket_name
-  state_key               = var.state_key
+  state_key_prefix        = "${var.state_key_prefix}/${var.environment}"
 }
 
 output "plan_role_arn" {
@@ -41,7 +41,7 @@ output "terraform_role_arn" {
 }
 
 output "workload_boundary_arn" {
-  description = "Boundary on every role the main stack creates. The main stack builds this ARN itself."
+  description = "Boundary on every role the Terragrunt units create. The network and app layers build this ARN themselves."
   value       = module.github_oidc.workload_boundary_arn
 }
 

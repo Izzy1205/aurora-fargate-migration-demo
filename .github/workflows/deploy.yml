@@ -1,114 +1,54 @@
 name: deploy
 
-# plan: terraform plan with the read-only plan role (production-infra-plan env,
-#   no reviewer). Uploads the readable plan for review and keeps the binary
-#   plan in the state bucket.
-# scan: builds both images and runs Trivy, no AWS access. Runs alongside plan.
-# infra: waits for review in production-infra, then applies the exact plan
-#   from the plan job with the terraform role. Waits for scan too, so a bad
-#   image stops the run before anything changes.
+# Runs one Terragrunt environment (testing is the only one deployed). Each
+# unit gets its own plan and apply, one unit at a time:
+#
+#   scan ------------------------------.
+#   network plan -> network apply -> data plan -> data apply -> app plan ->
+#     app apply -> outputs -> release
+#
+# plan (tg-plan.yml): read-only plan role in <env>-infra-plan, no reviewer.
+#   Plans against the real outputs of the units already applied, uploads the
+#   readable plan and keeps the binary plan in the state bucket.
+# apply (tg-apply.yml): waits for review in <env>-infra, then applies the
+#   exact saved plan with the terraform role. Every apply also waits for
+#   scan, so a bad image stops the run before anything changes. Skipped when
+#   that unit's plan has no changes.
+# outputs: reads the app unit's outputs with the plan role.
 # release: pushes the scanned images, runs Flyway, rolls the service with the
-#   deploy role (production-app env).
+#   deploy role (<env>-app env).
+#
+# Why not "terragrunt run --all plan" and then "run --all apply": the data
+# and app plans would be made before network is applied, so they'd be built
+# on mock or stale outputs, and the saved plans would no longer match what
+# gets applied. Planning each unit right after its dependencies are applied
+# keeps every saved plan exact. The cost is up to three approvals per run.
 #
 # Manual for now. For deploys on every merge add:
 #   push:
 #     branches: [main]
 on:
   workflow_dispatch:
+    inputs:
+      env:
+        description: Environment under terraform/environments. stage and production are not deployed yet.
+        type: choice
+        options: [testing]
+        default: testing
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-main
+  group: deploy-${{ inputs.env || 'testing' }}
   cancel-in-progress: false  # never cancel a half-finished apply or migration
 
 env:
   TF_VERSION: "1.17.0"
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-  TF_STATE_KEY: aurora-fargate-migration-demo/terraform.tfstate
-  APP_DESIRED_COUNT: "2"  # one task per AZ
 
 jobs:
-  # The repo is public, and so are its Actions artifacts to anyone signed in to
-  # GitHub. So the artifact only holds the readable plan (sensitive values are
-  # redacted by terraform show) and the binary plan's sha256. The binary plan
-  # can hold real values, so it goes to the private state bucket instead.
-  plan:
-    name: terraform plan
-    runs-on: ubuntu-latest
-    environment: production-infra-plan
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        working-directory: terraform
-    env:
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_owner: ${{ vars.OWNER }}
-      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
-      TF_VAR_alb_ingress_cidrs: ${{ vars.ALB_INGRESS_CIDRS }}
-      PLAN_KEY: plans/${{ github.run_id }}-${{ github.run_attempt }}/tfplan
-    outputs:
-      plan_key: ${{ steps.save.outputs.plan_key }}
-      plan_sha256: ${{ steps.save.outputs.plan_sha256 }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: gha-plan-${{ github.run_id }}
-
-      - name: init
-        run: |
-          terraform init \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="key=${TF_STATE_KEY}" \
-            -backend-config="region=${AWS_REGION}"
-
-      - name: plan
-        run: |
-          terraform plan -no-color -out=tfplan
-          terraform show -no-color tfplan > plan.txt
-          {
-            echo '### terraform plan'
-            echo 'Review this (or the terraform-plan artifact) before approving production-infra.'
-            echo '```'
-            tail -c 60000 plan.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: save plan
-        id: save
-        run: |
-          sha=$(sha256sum tfplan | cut -d' ' -f1)
-          echo "$sha  tfplan" > tfplan.sha256
-          aws s3 cp tfplan "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" --only-show-errors
-          {
-            echo "plan_key=${PLAN_KEY}"
-            echo "plan_sha256=${sha}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Binary plan sha256: \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: terraform-plan
-          path: |
-            terraform/plan.txt
-            terraform/tfplan.sha256
-          retention-days: 5
-
   # No credentials or OIDC token here, so a compromised scanner can't reach
   # AWS. A fixable CRITICAL fails the job and release never runs.
   scan:
@@ -156,20 +96,121 @@ jobs:
           path: images.tar
           retention-days: 1
 
-  infra:
-    name: terraform apply
-    needs: [plan, scan]
+  network-plan:
+    uses: ./.github/workflows/tg-plan.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: network
+
+  network-apply:
+    needs: [network-plan, scan]
+    if: needs.network-plan.outputs.has_changes == 'true'
+    uses: ./.github/workflows/tg-apply.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: network
+      plan_key: ${{ needs.network-plan.outputs.plan_key }}
+      plan_sha256: ${{ needs.network-plan.outputs.plan_sha256 }}
+
+  # Runs after network is applied, or when network had nothing to apply.
+  data-plan:
+    needs: [network-plan, network-apply, scan]
+    if: >-
+      !cancelled() &&
+      needs.network-plan.result == 'success' &&
+      needs.scan.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.network-apply.result)
+    uses: ./.github/workflows/tg-plan.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: data
+
+  data-apply:
+    needs: [data-plan, scan]
+    if: >-
+      !cancelled() &&
+      needs.scan.result == 'success' &&
+      needs.data-plan.result == 'success' &&
+      needs.data-plan.outputs.has_changes == 'true'
+    uses: ./.github/workflows/tg-apply.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: data
+      plan_key: ${{ needs.data-plan.outputs.plan_key }}
+      plan_sha256: ${{ needs.data-plan.outputs.plan_sha256 }}
+
+  app-plan:
+    needs: [data-plan, data-apply, scan]
+    if: >-
+      !cancelled() &&
+      needs.data-plan.result == 'success' &&
+      needs.scan.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.data-apply.result)
+    uses: ./.github/workflows/tg-plan.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: app
+
+  app-apply:
+    needs: [app-plan, scan]
+    if: >-
+      !cancelled() &&
+      needs.scan.result == 'success' &&
+      needs.app-plan.result == 'success' &&
+      needs.app-plan.outputs.has_changes == 'true'
+    uses: ./.github/workflows/tg-apply.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ inputs.env || 'testing' }}
+      unit: app
+      plan_key: ${{ needs.app-plan.outputs.plan_key }}
+      plan_sha256: ${{ needs.app-plan.outputs.plan_sha256 }}
+
+  # The release job needs these names and IDs. Read with the read-only plan
+  # role after the last apply. The app unit passes through the network values
+  # release needs, so this is the only unit read here.
+  outputs:
+    name: read app outputs
+    needs: [app-plan, app-apply, scan]
+    if: >-
+      !cancelled() &&
+      needs.app-plan.result == 'success' &&
+      needs.scan.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.app-apply.result)
     runs-on: ubuntu-latest
-    environment: production-infra
+    environment: ${{ inputs.env || 'testing' }}-infra-plan
     permissions:
       contents: read
       id-token: write
     defaults:
       run:
         working-directory: terraform
+        shell: bash
     env:
-      PLAN_KEY: ${{ needs.plan.outputs.plan_key }}
-      PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
+      MIGDEMO_OWNER: ${{ vars.OWNER }}
+      MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
+      MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
+      MIGDEMO_MOCKS_ON_PLAN: "false"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_REGION: ${{ vars.AWS_REGION }}
+      UNIT_DIR: environments/${{ inputs.env || 'testing' }}/app
     outputs:
       cluster: ${{ steps.out.outputs.cluster }}
       service: ${{ steps.out.outputs.service }}
@@ -181,71 +222,57 @@ jobs:
       migration_repo: ${{ steps.out.outputs.migration_repo }}
       migration_log_group: ${{ steps.out.outputs.migration_log_group }}
       app_url: ${{ steps.out.outputs.app_url }}
+      desired_count: ${{ steps.out.outputs.desired_count }}
     steps:
       - uses: actions/checkout@v7
 
-      # Same Terraform version, backend and lock file as the plan job. A saved
-      # plan refuses to apply if any of those differ or if the state changed
-      # since the plan was made.
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      - uses: ./.github/actions/setup-terragrunt
+
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: gha-apply-${{ github.run_id }}
+          role-session-name: gha-outputs-${{ github.run_id }}
           mask-aws-account-id: false  # outputs below are passed between jobs
-
-      - name: init
-        run: |
-          terraform init \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="key=${TF_STATE_KEY}" \
-            -backend-config="region=${AWS_REGION}"
-
-      - name: fetch and check the reviewed plan
-        run: |
-          aws s3 cp "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" tfplan --only-show-errors
-          echo "${PLAN_SHA256}  tfplan" | sha256sum --check --strict
-
-      - name: apply the reviewed plan
-        run: terraform apply -no-color tfplan
-
-      - name: remove the saved plan
-        if: ${{ always() }}
-        run: aws s3 rm "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" --only-show-errors || true
 
       - name: export outputs
         id: out
         run: |
+          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
+            -- output -json > "$RUNNER_TEMP/outputs.json"
+          o() { jq -er --arg k "$1" '.[$k].value' "$RUNNER_TEMP/outputs.json"; }
           {
-            echo "cluster=$(terraform output -raw ecs_cluster_name)"
-            echo "service=$(terraform output -raw app_service_name)"
-            echo "app_family=$(terraform output -raw app_task_family)"
-            echo "migration_family=$(terraform output -raw migration_task_family)"
-            echo "subnets=$(terraform output -raw private_subnet_ids_csv)"
-            echo "migration_sg=$(terraform output -raw migration_security_group_id)"
-            echo "app_repo=$(terraform output -raw app_ecr_repository)"
-            echo "migration_repo=$(terraform output -raw migration_ecr_repository)"
-            echo "migration_log_group=$(terraform output -raw migration_log_group)"
-            echo "app_url=$(terraform output -raw app_url)"
+            echo "cluster=$(o ecs_cluster_name)"
+            echo "service=$(o app_service_name)"
+            echo "app_family=$(o app_task_family)"
+            echo "migration_family=$(o migration_task_family)"
+            echo "subnets=$(o private_subnet_ids_csv)"
+            echo "migration_sg=$(o migration_security_group_id)"
+            echo "app_repo=$(o app_ecr_repository)"
+            echo "migration_repo=$(o migration_ecr_repository)"
+            echo "migration_log_group=$(o migration_log_group)"
+            echo "app_url=$(o app_url)"
+            echo "desired_count=$(o app_desired_count)"
           } >> "$GITHUB_OUTPUT"
 
   release:
     name: build, migrate, deploy
-    needs: [infra, scan]
+    needs: [outputs, scan]
     runs-on: ubuntu-latest
-    environment: production-app
+    environment: ${{ inputs.env || 'testing' }}-app
     permissions:
       contents: read
       id-token: write
     env:
-      CLUSTER: ${{ needs.infra.outputs.cluster }}
-      SERVICE: ${{ needs.infra.outputs.service }}
+      CLUSTER: ${{ needs.outputs.outputs.cluster }}
+      SERVICE: ${{ needs.outputs.outputs.service }}
       TAG: ${{ github.sha }}
+      APP_DESIRED_COUNT: ${{ needs.outputs.outputs.desired_count }}  # app_desired_count in env.hcl
     steps:
       - uses: actions/checkout@v7
 
@@ -267,8 +294,8 @@ jobs:
       - name: push scanned images
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          APP_REPO: ${{ needs.infra.outputs.app_repo }}
-          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
+          APP_REPO: ${{ needs.outputs.outputs.app_repo }}
+          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
         run: |
           docker load -i images.tar
           push_once() {
@@ -288,11 +315,11 @@ jobs:
       - name: run Flyway migration task in the private subnets
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
-          MIGRATION_FAMILY: ${{ needs.infra.outputs.migration_family }}
-          SUBNETS: ${{ needs.infra.outputs.subnets }}
-          SECURITY_GROUP: ${{ needs.infra.outputs.migration_sg }}
-          LOG_GROUP: ${{ needs.infra.outputs.migration_log_group }}
+          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          MIGRATION_FAMILY: ${{ needs.outputs.outputs.migration_family }}
+          SUBNETS: ${{ needs.outputs.outputs.subnets }}
+          SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
+          LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
         run: |
           TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$REGISTRY/$MIGRATION_REPO:$TAG")
           export TASK_DEFINITION
@@ -302,9 +329,9 @@ jobs:
       - name: deploy app
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          APP_REPO: ${{ needs.infra.outputs.app_repo }}
-          APP_FAMILY: ${{ needs.infra.outputs.app_family }}
-          APP_URL: ${{ needs.infra.outputs.app_url }}
+          APP_REPO: ${{ needs.outputs.outputs.app_repo }}
+          APP_FAMILY: ${{ needs.outputs.outputs.app_family }}
+          APP_URL: ${{ needs.outputs.outputs.app_url }}
         run: |
           task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$REGISTRY/$APP_REPO:$TAG")
           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \

@@ -32,11 +32,13 @@ jobs:
     defaults:
       run:
         working-directory: terraform
+        shell: bash  # -eo pipefail, so a failed plan isn't hidden by tee
     env:
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_owner: ${{ vars.OWNER }}
-      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
-      TF_VAR_alb_ingress_cidrs: ${{ vars.ALB_INGRESS_CIDRS }}
+      # Read by root.hcl and _envcommon through get_env, not as TF_VAR_.
+      MIGDEMO_OWNER: ${{ vars.OWNER }}
+      MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
+      MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
+      MIGDEMO_ENV: testing
     steps:
       - uses: actions/checkout@v7
 
@@ -45,15 +47,29 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: fmt
-        run: terraform fmt -check -recursive -diff
+      - uses: ./.github/actions/setup-terragrunt
 
-      - name: validate (main and bootstrap, no backend)
+      - name: fmt
         run: |
-          terraform init -backend=false
-          terraform validate
-          terraform -chdir=bootstrap init -backend=false
-          terraform -chdir=bootstrap validate
+          terraform fmt -check -recursive -diff
+          terragrunt hcl fmt --check --diff
+
+      - name: validate (bootstrap and each layer, no backend)
+        run: |
+          for d in bootstrap layers/network layers/data layers/app; do
+            echo "::group::$d"
+            terraform -chdir="$d" init -backend=false
+            terraform -chdir="$d" validate
+            echo "::endgroup::"
+          done
+
+      # Checks every env, including the ones that aren't deployed, against
+      # mocked dependency outputs. No AWS access needed.
+      - name: terragrunt validate
+        working-directory: terraform/environments
+        run: |
+          terragrunt hcl validate --inputs --strict
+          terragrunt list --dag --tree
 
       - uses: terraform-linters/setup-tflint@v6
 
@@ -73,23 +89,30 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-plan-${{ github.run_id }}
 
+      # One unit at a time in dependency order, so plan.txt has a header per
+      # unit. If an upstream unit has no state yet (or its outputs would
+      # change), data and app are planned against mock outputs. This plan is
+      # for review only and is never applied; deploy.yml makes its own.
       - name: plan
         id: plan
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: terraform/environments/${{ env.MIGDEMO_ENV }}
         env:
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
-        if: github.event.pull_request.head.repo.full_name == github.repository
+          TF_STATE_REGION: ${{ vars.AWS_REGION }}
         run: |
-          terraform init -reconfigure \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="key=aurora-fargate-migration-demo/terraform.tfstate" \
-            -backend-config="region=${AWS_REGION}"
-          terraform plan -no-color -out=tfplan
-          terraform show -no-color tfplan > plan.txt
+          : > "$GITHUB_WORKSPACE/plan.txt"
+          for unit in network data app; do
+            echo "## ${MIGDEMO_ENV}/${unit}" >> "$GITHUB_WORKSPACE/plan.txt"
+            terragrunt run --working-dir "$unit" --non-interactive --tf-forward-stdout \
+              -- plan -no-color \
+              | tee -a "$GITHUB_WORKSPACE/plan.txt"
+            echo >> "$GITHUB_WORKSPACE/plan.txt"
+          done
           {
-            echo '### terraform plan'
+            echo "### terragrunt plan (${MIGDEMO_ENV})"
             echo '```'
-            tail -c 60000 plan.txt
+            tail -c 60000 "$GITHUB_WORKSPACE/plan.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -99,8 +122,8 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
-            const body = '### terraform plan\n```\n' + plan.slice(-60000) + '\n```';
+            const plan = fs.readFileSync('plan.txt', 'utf8');
+            const body = '### terragrunt plan (testing)\n```\n' + plan.slice(-60000) + '\n```';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

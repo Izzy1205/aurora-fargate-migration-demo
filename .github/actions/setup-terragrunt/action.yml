@@ -1,0 +1,30 @@
+name: setup-terragrunt
+description: Install a pinned Terragrunt release and check it against a known sha256.
+
+# Bumping the version means updating both inputs together. The sha256 is the
+# terragrunt_linux_amd64 line from that release's SHA256SUMS file.
+inputs:
+  version:
+    description: Terragrunt release tag.
+    default: "v1.2.1"
+  sha256:
+    description: sha256 of terragrunt_linux_amd64 for that release.
+    default: "f2f6238ad2348855a4e876b90fd31f3f5d106bb234794202a00b2bcc139fa753"
+
+runs:
+  using: composite
+  steps:
+    - name: install terragrunt
+      shell: bash
+      env:
+        TG_VERSION: ${{ inputs.version }}
+        TG_SHA256: ${{ inputs.sha256 }}
+      run: |
+        bin="$RUNNER_TEMP/terragrunt-bin"
+        mkdir -p "$bin"
+        curl -fsSL --retry 3 -o "$bin/terragrunt" \
+          "https://github.com/gruntwork-io/terragrunt/releases/download/${TG_VERSION}/terragrunt_linux_amd64"
+        echo "${TG_SHA256}  $bin/terragrunt" | sha256sum -c -
+        chmod +x "$bin/terragrunt"
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/terragrunt" --version

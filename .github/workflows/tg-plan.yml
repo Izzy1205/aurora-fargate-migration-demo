@@ -1,0 +1,131 @@
+name: tg-plan
+
+# Called by deploy.yml once per unit. Plans one Terragrunt unit with the
+# read-only plan role against the real outputs of the units it depends on
+# (mocks are switched off), and keeps the binary plan in the state bucket.
+#
+# The repo is public, and so are its Actions artifacts to anyone signed in to
+# GitHub. So the artifact only holds the readable plan (sensitive values are
+# redacted by terraform show) and the binary plan's sha256. The binary plan
+# can hold real values, so it goes to the private state bucket instead.
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: Folder under terraform/environments.
+        type: string
+        required: true
+      unit:
+        description: Unit folder inside that env (network, data or app).
+        type: string
+        required: true
+    outputs:
+      has_changes:
+        description: "'true' when the plan has changes and was saved."
+        value: ${{ jobs.plan.outputs.has_changes }}
+      plan_key:
+        value: ${{ jobs.plan.outputs.plan_key }}
+      plan_sha256:
+        value: ${{ jobs.plan.outputs.plan_sha256 }}
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.17.0"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  plan:
+    name: plan ${{ inputs.env }}/${{ inputs.unit }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}-infra-plan
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform
+        shell: bash
+    env:
+      MIGDEMO_OWNER: ${{ vars.OWNER }}
+      MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
+      MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
+      # Plan against real upstream outputs only. If an upstream unit has no
+      # state, this plan fails instead of quietly using mock values.
+      MIGDEMO_MOCKS_ON_PLAN: "false"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_REGION: ${{ vars.AWS_REGION }}
+      UNIT: ${{ inputs.env }}/${{ inputs.unit }}
+      UNIT_DIR: environments/${{ inputs.env }}/${{ inputs.unit }}
+      INFRA_ENV: ${{ inputs.env }}-infra
+      PLAN_KEY: plans/${{ github.run_id }}-${{ github.run_attempt }}/${{ inputs.env }}/${{ inputs.unit }}/tfplan
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      plan_key: ${{ steps.save.outputs.plan_key }}
+      plan_sha256: ${{ steps.save.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: ./.github/actions/setup-terragrunt
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-plan-${{ github.run_id }}
+
+      # Terragrunt runs Terraform inside .terragrunt-cache, so the plan file
+      # path has to be absolute. -detailed-exitcode: 0 no changes, 2 changes.
+      - name: plan
+        id: plan
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          set +e
+          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
+            -- plan -detailed-exitcode -no-color -out="$RUNNER_TEMP/tfplan"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "has_changes=false" >> "$GITHUB_OUTPUT" ;;
+            2) echo "has_changes=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
+            -- show -no-color "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/out/plan.txt"
+          {
+            echo "### terragrunt plan ${UNIT}"
+            if [ "$rc" = 0 ]; then
+              echo 'No changes. The apply job for this unit is skipped.'
+            else
+              echo "Review this (or the plan artifact) before approving ${INFRA_ENV}."
+            fi
+            echo '```'
+            tail -c 60000 "$RUNNER_TEMP/out/plan.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: save plan
+        id: save
+        if: steps.plan.outputs.has_changes == 'true'
+        run: |
+          sha=$(sha256sum "$RUNNER_TEMP/tfplan" | cut -d' ' -f1)
+          echo "$sha  tfplan" > "$RUNNER_TEMP/out/tfplan.sha256"
+          aws s3 cp "$RUNNER_TEMP/tfplan" "s3://${TF_STATE_BUCKET}/${PLAN_KEY}" --only-show-errors
+          {
+            echo "plan_key=${PLAN_KEY}"
+            echo "plan_sha256=${sha}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Binary plan sha256: \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: terraform-plan-${{ inputs.env }}-${{ inputs.unit }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 5

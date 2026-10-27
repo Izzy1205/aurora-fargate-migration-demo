@@ -1,19 +1,19 @@
 variable "aws_region" {
-  description = "Region of the main stack."
+  description = "Region of the Terragrunt environment these roles serve. Must match aws_region in its env.hcl."
   type        = string
-  default     = "us-east-1"
+  default     = "us-east-2"
 }
 
 variable "project" {
-  description = "Must match the main stack."
+  description = "Must match project in terraform/root.hcl."
   type        = string
   default     = "migdemo"
 }
 
 variable "environment" {
-  description = "Must match the main stack."
+  description = "Must match environment in terraform/environments/<env>/env.hcl. Only testing is deployed."
   type        = string
-  default     = "demo"
+  default     = "testing"
 }
 
 variable "owner" {
@@ -34,19 +34,19 @@ variable "github_repo" {
 variable "github_plan_environment" {
   description = "GitHub environment the deploy.yml plan job runs in. No reviewer, main only."
   type        = string
-  default     = "production-infra-plan"
+  default     = "testing-infra-plan"
 }
 
 variable "github_infra_environment" {
   description = "GitHub environment the terraform apply job runs in."
   type        = string
-  default     = "production-infra"
+  default     = "testing-infra"
 }
 
 variable "github_app_environment" {
   description = "GitHub environment the migrate and deploy job runs in."
   type        = string
-  default     = "production-app"
+  default     = "testing-app"
 }
 
 variable "create_github_oidc_provider" {
@@ -56,14 +56,14 @@ variable "create_github_oidc_provider" {
 }
 
 variable "state_bucket_name" {
-  description = "State bucket. The plan role gets read and lock access to the main stack's key."
+  description = "State bucket. The plan role gets read and lock access to this environment's unit state keys."
   type        = string
 }
 
-variable "state_key" {
-  description = "Main stack state key. Must match backend.hcl."
+variable "state_key_prefix" {
+  description = "Key prefix of the Terragrunt unit states. Must match the key in terraform/root.hcl. The environment name is added after it."
   type        = string
-  default     = "aurora-fargate-migration-demo/terraform.tfstate"
+  default     = "aurora-fargate-migration-demo"
 }
 
 variable "github_subject_prefixes" {
