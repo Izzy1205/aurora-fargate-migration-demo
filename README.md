@@ -134,7 +134,7 @@ bucket. The per-env folders only pick sizes; all the Terraform lives in
 
 | Env | Status |
 |---|---|
-| `testing` | Deployed by `deploy.yml`. Same sizes as the original demo: one AZ for the endpoints, Aurora 0 to 2 ACU with auto-pause, 2 app tasks. |
+| `testing` | Deployed by `deploy.yml` (not deployed yet under this layout, see below). Same sizes as the original demo: one AZ for the endpoints, Aurora 0 to 2 ACU with auto-pause, 2 app tasks. |
 | `stage` | Not deployed. `env.hcl` only, checked in CI against mock outputs. |
 | `production` | Not deployed. `env.hcl` only, checked in CI against mock outputs. |
 
@@ -142,6 +142,11 @@ Deploying stage or production would need its own state bucket, a bootstrap
 apply with that `environment`, its three GitHub environments, and the env
 added to the `deploy.yml` choice list. The budget is account wide, so two envs
 in one account would each create one.
+
+Where things stand: the single-env stack was deployed to us-east-2 through
+the deploy workflow on 2026-10-24 and torn down the same weekend, with
+bootstrap kept. Since the Terragrunt refactor (PR #4) only bootstrap has been
+re-applied. The testing env hasn't been deployed under the new layout yet.
 
 Before Terragrunt, the whole stack lived in one root with its state at
 `aurora-fargate-migration-demo/terraform.tfstate`. That stack was destroyed

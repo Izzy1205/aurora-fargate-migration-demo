@@ -60,7 +60,8 @@ resource "aws_iam_role" "apply" {
 
 # PowerUserAccess covers every non-IAM service the stack uses. Still broader
 # than it needs to be. The next step is a policy generated from CloudTrail by
-# IAM Access Analyzer after a full apply and destroy, which I haven't done yet.
+# IAM Access Analyzer from the CloudTrail of a full apply and destroy. The
+# 2026-10-24 deploy and teardown would do, but I haven't generated it yet.
 # IAM is handled separately below.
 resource "aws_iam_role_policy_attachment" "apply_poweruser" {
   role       = aws_iam_role.apply.name
