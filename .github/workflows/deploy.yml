@@ -279,6 +279,10 @@ jobs:
   release:
     name: build, migrate, deploy
     needs: [outputs, scan]
+    if: >-
+      !cancelled() &&
+      needs.outputs.result == 'success' &&
+      needs.scan.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ inputs.env || 'testing' }}-app
     permissions:
