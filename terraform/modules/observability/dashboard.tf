@@ -8,6 +8,7 @@ locals {
   tg  = var.target_group_arn_suffix
   ecs = ["ClusterName", var.ecs_cluster_name, "ServiceName", var.ecs_service_name]
   db  = ["DBClusterIdentifier", var.aurora_cluster_identifier]
+  waf = ["WebACL", var.waf_web_acl_name, "Region", local.region, "Rule", "ALL"]
 
   widgets = [
     {
@@ -59,6 +60,15 @@ locals {
       stat  = "Minimum"
       metrics = [
         concat(["AWS/RDS", "FreeableMemory"], local.db),
+      ]
+    },
+    {
+      title = "WAF requests (sum per 5 min)"
+      stat  = "Sum"
+      metrics = [
+        concat(["AWS/WAFV2", "AllowedRequests"], local.waf),
+        concat(["AWS/WAFV2", "BlockedRequests"], local.waf),
+        concat(["AWS/WAFV2", "CountedRequests"], local.waf),
       ]
     },
   ]

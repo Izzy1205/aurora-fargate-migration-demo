@@ -14,6 +14,7 @@
 #   ALB:    AWS/ApplicationELB, LoadBalancer (+ TargetGroup)
 #   ECS:    AWS/ECS, ClusterName + ServiceName (no Container Insights needed)
 #   Aurora: AWS/RDS, DBClusterIdentifier
+#   WAF:    AWS/WAFV2, WebACL + Region + Rule (Rule = ALL for the whole ACL)
 
 locals {
   lb_dims = { LoadBalancer = var.alb_arn_suffix }
@@ -23,6 +24,11 @@ locals {
     ServiceName = var.ecs_service_name
   }
   db_dims = { DBClusterIdentifier = var.aurora_cluster_identifier }
+  waf_dims = {
+    WebACL = var.waf_web_acl_name
+    Region = data.aws_region.current.region
+    Rule   = "ALL"
+  }
 
   t = var.thresholds
 
@@ -177,6 +183,22 @@ locals {
       datapoints  = 2
       comparison  = "GreaterThanThreshold"
       threshold   = local.t.aurora_connections
+      missing     = "notBreaching"
+    }
+    # WAF only reports BlockedRequests when it blocks something, so no data
+    # is good news. In count-only mode nothing is blocked and this stays OK;
+    # watch CountedRequests on the dashboard instead.
+    waf-blocked-spike = {
+      description = "The WAF blocked a lot of requests (rate limit or managed rules). Either an attack or a false positive."
+      namespace   = "AWS/WAFV2"
+      metric      = "BlockedRequests"
+      statistic   = "Sum"
+      dimensions  = local.waf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = local.t.waf_blocked_requests
       missing     = "notBreaching"
     }
   }

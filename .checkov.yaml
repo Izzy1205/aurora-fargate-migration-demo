@@ -14,7 +14,6 @@ skip-check:
   - CKV_AWS_103    # TLS 1.2 on listener
   - CKV2_AWS_20    # HTTP to HTTPS redirect
   - CKV_AWS_378    # target group HTTP (TLS ends at the ALB in production too)
-  - CKV2_AWS_28    # WAF in front of the ALB (adds cost; production item)
   - CKV_AWS_91     # ALB access logs (needs a log bucket that outlives teardown)
   # Built and destroyed the same day, so protection would only block teardown.
   - CKV_AWS_139    # RDS deletion protection

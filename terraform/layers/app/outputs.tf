@@ -65,3 +65,13 @@ output "target_group_arn_suffix" {
   description = "App target group ARN suffix. The observability unit uses it as an alarm dimension."
   value       = module.ecs.target_group_arn_suffix
 }
+
+output "waf_web_acl_name" {
+  description = "WAF web ACL name. The observability unit uses it as an alarm dimension."
+  value       = module.waf.web_acl_name
+}
+
+output "waf_log_group" {
+  description = "CloudWatch log group with the WAF logs."
+  value       = module.waf.log_group_name
+}

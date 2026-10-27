@@ -38,6 +38,11 @@ variable "desired_count" {
   }
 }
 
+variable "waf_web_acl_name" {
+  description = "WAF web ACL name, the WebACL dimension."
+  type        = string
+}
+
 variable "aurora_cluster_identifier" {
   description = "Aurora cluster identifier, the DBClusterIdentifier dimension."
   type        = string
@@ -56,6 +61,7 @@ variable "thresholds" {
     aurora_acu_percent           = optional(number, 90)        # of max ACU
     aurora_freeable_memory_bytes = optional(number, 268435456) # 256 MiB
     aurora_connections           = optional(number, 100)
+    waf_blocked_requests         = optional(number, 100) # blocked in 5 minutes
   })
   default = {}
 }

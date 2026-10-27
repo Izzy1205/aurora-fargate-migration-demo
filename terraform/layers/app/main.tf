@@ -1,6 +1,6 @@
-# Layer 3 of 3: ECR repos, the ECS cluster, ALB, task definitions and service,
-# plus the cost budget. Network and database values come in as variables from
-# the other two units.
+# Layer 3: ECR repos, the ECS cluster, ALB and its WAF, task definitions and
+# service, plus the cost budget. Network and database values come in as
+# variables from the other two units.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -41,6 +41,17 @@ module "ecs" {
   db_port       = var.db_port
   db_name       = var.db_name
   db_secret_arn = var.db_secret_arn
+}
+
+# Web ACL on the ALB. Lives in this unit so it's created and destroyed with
+# the ALB it protects.
+module "waf" {
+  source = "../../modules/waf"
+
+  name_prefix = local.name_prefix
+  alb_arn     = module.ecs.alb_arn
+  rate_limit  = var.waf_rate_limit
+  count_only  = var.waf_count_only
 }
 
 module "budget" {

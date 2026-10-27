@@ -21,6 +21,12 @@ locals {
   app_desired_count = 2 # one task per AZ
   budget_limit_usd  = 10
 
+  # WAF on the ALB. Blocking from day one here: the ALB only lets in your
+  # own /32, so a false positive hits you, not a customer. Per IP, per 5
+  # minutes.
+  waf_rate_limit = 1000
+  waf_count_only = false
+
   # Alarm thresholds. Empty means the module defaults, which are sized for
   # this env (see modules/observability/variables.tf).
   alarm_thresholds = {}
