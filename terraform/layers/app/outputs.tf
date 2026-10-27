@@ -55,3 +55,13 @@ output "app_desired_count" {
   description = "Tasks to run after a release. Set per environment in env.hcl."
   value       = var.app_desired_count
 }
+
+output "alb_arn_suffix" {
+  description = "ALB ARN suffix. The observability unit uses it as an alarm dimension."
+  value       = module.ecs.alb_arn_suffix
+}
+
+output "target_group_arn_suffix" {
+  description = "App target group ARN suffix. The observability unit uses it as an alarm dimension."
+  value       = module.ecs.target_group_arn_suffix
+}

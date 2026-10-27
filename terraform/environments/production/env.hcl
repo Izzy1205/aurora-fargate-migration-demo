@@ -20,4 +20,12 @@ locals {
 
   app_desired_count = 4
   budget_limit_usd  = 50
+
+  # Alarm thresholds, on top of the module defaults. More traffic means more
+  # stray 5xx, and max 8 ACU allows well over 1,000 Postgres connections.
+  alarm_thresholds = {
+    elb_5xx_count      = 20
+    target_5xx_count   = 20
+    aurora_connections = 800
+  }
 }

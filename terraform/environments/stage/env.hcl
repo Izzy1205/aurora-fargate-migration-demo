@@ -21,4 +21,10 @@ locals {
 
   app_desired_count = 2
   budget_limit_usd  = 25
+
+  # Alarm thresholds, on top of the module defaults. Max 4 ACU allows roughly
+  # 800 Postgres connections, so alert at about half.
+  alarm_thresholds = {
+    aurora_connections = 400
+  }
 }
