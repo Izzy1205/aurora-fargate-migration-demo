@@ -29,11 +29,12 @@ module "backup" {
   name_prefix      = local.name_prefix
   cluster_arn      = module.database.cluster_arn
   backup_role_name = "${local.name_prefix}-backup"
+  dr_copy_enabled  = var.dr_copy_enabled
 }
 
 check "dr_region_differs" {
   assert {
-    condition     = module.backup.dr_region != data.aws_region.home.region
+    condition     = !var.dr_copy_enabled || module.backup.dr_region != data.aws_region.home.region
     error_message = "dr_region is the same as the home region. The copies would go down with it."
   }
 }

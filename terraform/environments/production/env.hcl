@@ -1,9 +1,10 @@
 # Not deployed. Inputs only, same as stage.
 
 locals {
-  environment = "production"
-  aws_region  = "us-east-2"
-  dr_region   = "us-west-2" # backup copies
+  environment     = "production"
+  aws_region      = "us-east-2"
+  dr_region       = "us-west-2" # backup copies
+  dr_copy_enabled = false       # org SCP blocks us-west-2
 
   state_bucket = "REPLACE-ME-production-tfstate-bucket"
 

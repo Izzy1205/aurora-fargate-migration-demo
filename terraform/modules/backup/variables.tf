@@ -42,3 +42,10 @@ variable "dr_retention_days" {
     error_message = "dr_retention_days must be a whole number of days, at least 1."
   }
 }
+
+# Off by default: our org's SCP only allows full use of us-east-2.
+variable "dr_copy_enabled" {
+  description = "Copy each backup to the DR region."
+  type        = bool
+  default     = false
+}

@@ -56,6 +56,6 @@ output "backup_vault_name" {
 }
 
 output "dr_backup_vault_arn" {
-  description = "AWS Backup vault in the DR region that holds the copies."
+  description = "AWS Backup vault in the DR region, null when the copy is off."
   value       = module.backup.dr_vault_arn
 }

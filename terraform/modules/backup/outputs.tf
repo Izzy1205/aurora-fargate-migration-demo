@@ -4,8 +4,8 @@ output "vault_name" {
 }
 
 output "dr_vault_arn" {
-  description = "Backup vault in the DR region that holds the copies."
-  value       = aws_backup_vault.dr.arn
+  description = "Backup vault in the DR region, null when the copy is off."
+  value       = one(aws_backup_vault.dr[*].arn)
 }
 
 output "dr_region" {
@@ -14,8 +14,8 @@ output "dr_region" {
 }
 
 output "dr_kms_key_arn" {
-  description = "Customer managed key that encrypts the copies in the DR region."
-  value       = aws_kms_key.dr.arn
+  description = "Key for the DR copies, null when the copy is off."
+  value       = one(aws_kms_key.dr[*].arn)
 }
 
 output "plan_id" {

@@ -1,4 +1,4 @@
-# Copies daily Aurora snapshots to the DR region in case the home region goes down.
+# Daily Aurora snapshots, with an optional copy to the DR region.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -28,14 +28,16 @@ resource "aws_backup_vault" "home" {
 # Aurora copies can't use the AWS Backup managed key, and aws/rds may not exist
 # in the DR region yet, so it gets its own key.
 resource "aws_backup_vault" "dr" {
+  count    = var.dr_copy_enabled ? 1 : 0
   provider = aws.dr
 
   name          = "${var.name_prefix}-aurora-dr"
-  kms_key_arn   = aws_kms_key.dr.arn
+  kms_key_arn   = aws_kms_key.dr[0].arn
   force_destroy = true
 }
 
 resource "aws_kms_key" "dr" {
+  count    = var.dr_copy_enabled ? 1 : 0
   provider = aws.dr
 
   description             = "${var.name_prefix} Aurora backup copies"
@@ -45,10 +47,11 @@ resource "aws_kms_key" "dr" {
 }
 
 resource "aws_kms_alias" "dr" {
+  count    = var.dr_copy_enabled ? 1 : 0
   provider = aws.dr
 
   name          = "alias/${var.name_prefix}-backup-dr"
-  target_key_id = aws_kms_key.dr.key_id
+  target_key_id = aws_kms_key.dr[0].key_id
 }
 
 data "aws_iam_policy_document" "dr_key" {
@@ -119,7 +122,7 @@ resource "aws_backup_plan" "this" {
   name = "${var.name_prefix}-aurora"
 
   rule {
-    rule_name         = "daily-with-dr-copy"
+    rule_name         = "daily"
     target_vault_name = aws_backup_vault.home.name
     schedule          = var.schedule
 
@@ -130,11 +133,14 @@ resource "aws_backup_plan" "this" {
       delete_after = var.retention_days
     }
 
-    copy_action {
-      destination_vault_arn = aws_backup_vault.dr.arn
+    dynamic "copy_action" {
+      for_each = aws_backup_vault.dr
+      content {
+        destination_vault_arn = copy_action.value.arn
 
-      lifecycle {
-        delete_after = var.dr_retention_days
+        lifecycle {
+          delete_after = var.dr_retention_days
+        }
       }
     }
   }

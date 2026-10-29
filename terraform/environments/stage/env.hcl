@@ -1,9 +1,10 @@
 # Not deployed. Inputs only, so the layout shows what a second env looks like.
 
 locals {
-  environment = "stage"
-  aws_region  = "us-east-2"
-  dr_region   = "us-west-2" # backup copies
+  environment     = "stage"
+  aws_region      = "us-east-2"
+  dr_region       = "us-west-2" # backup copies
+  dr_copy_enabled = false       # org SCP blocks us-west-2
 
   state_bucket = "REPLACE-ME-stage-tfstate-bucket"
 
