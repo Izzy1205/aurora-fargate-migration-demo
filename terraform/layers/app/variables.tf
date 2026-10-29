@@ -71,8 +71,28 @@ variable "db_name" {
   type        = string
 }
 
-variable "db_secret_arn" {
-  description = "ARN of the RDS-managed secret. From the data unit. ARN only, never the value."
+variable "master_secret_arn" {
+  description = "ARN of the RDS-managed master secret. From the data unit. ARN only, never the value."
+  type        = string
+}
+
+variable "app_secret_arn" {
+  description = "ARN of the app login secret. From the data unit. ARN only, never the value."
+  type        = string
+}
+
+variable "migrator_secret_arn" {
+  description = "ARN of the Flyway login secret. From the data unit. ARN only, never the value."
+  type        = string
+}
+
+variable "app_username" {
+  description = "Postgres role the app logs in as. From the data unit."
+  type        = string
+}
+
+variable "migrator_username" {
+  description = "Postgres role Flyway logs in as. From the data unit."
   type        = string
 }
 

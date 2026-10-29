@@ -39,13 +39,13 @@ variable "db_name" {
 }
 
 variable "master_username" {
-  description = "Master username. The password is generated and stored by RDS in Secrets Manager."
+  description = "Master username, kept for break-glass and the db-logins task. RDS generates the password and stores it in Secrets Manager."
   type        = string
   default     = "demo_admin"
 }
 
 variable "iam_database_authentication_enabled" {
-  description = "Turn on IAM database auth. Free to enable; the demo app still uses the managed secret."
+  description = "Turn on IAM database auth. Free to enable; the app and Flyway still log in with passwords."
   type        = bool
   default     = true
 }
@@ -54,4 +54,33 @@ variable "log_retention_days" {
   description = "Retention for the exported Postgres log group."
   type        = number
   default     = 7
+}
+
+variable "app_username" {
+  description = "Postgres role the app logs in as. Gets row access only."
+  type        = string
+  default     = "app_user"
+}
+
+variable "migrator_username" {
+  description = "Postgres role Flyway logs in as. Owns the schema."
+  type        = string
+  default     = "migrator"
+}
+
+variable "login_password_version" {
+  description = "Bump to generate new app and Flyway passwords on the next apply."
+  type        = number
+  default     = 1
+}
+
+variable "secret_recovery_window_days" {
+  description = "Days a deleted login secret can be restored. 0 deletes right away, so a rebuild the same day can reuse the name."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.secret_recovery_window_days == 0 || (var.secret_recovery_window_days >= 7 && var.secret_recovery_window_days <= 30)
+    error_message = "Use 0, or 7 to 30 days."
+  }
 }

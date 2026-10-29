@@ -1,5 +1,5 @@
-# Read by the app unit through a Terragrunt dependency block. Secret ARN
-# only, never the value.
+# Read by the app unit through a Terragrunt dependency block. Secret ARNs
+# only, never the values.
 
 output "endpoint" {
   description = "Writer endpoint."
@@ -16,9 +16,29 @@ output "db_name" {
   value       = module.database.db_name
 }
 
-output "db_secret_arn" {
-  description = "ARN of the RDS-managed secret (ARN only, not the value)."
+output "master_secret_arn" {
+  description = "ARN of the RDS-managed master secret. Only the db-logins task reads it."
   value       = module.database.master_user_secret_arn
+}
+
+output "app_secret_arn" {
+  description = "ARN of the app login secret."
+  value       = module.database.app_secret_arn
+}
+
+output "migrator_secret_arn" {
+  description = "ARN of the Flyway login secret."
+  value       = module.database.migrator_secret_arn
+}
+
+output "app_username" {
+  description = "Postgres role the app logs in as."
+  value       = module.database.app_username
+}
+
+output "migrator_username" {
+  description = "Postgres role Flyway logs in as."
+  value       = module.database.migrator_username
 }
 
 output "aurora_cluster_identifier" {

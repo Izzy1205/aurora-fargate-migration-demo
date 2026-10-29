@@ -29,10 +29,14 @@ dependency "data" {
   config_path = "${get_terragrunt_dir()}/../data"
 
   mock_outputs = {
-    endpoint      = "mock-aurora.cluster-000000000000.us-east-2.rds.amazonaws.com"
-    port          = 5432
-    db_name       = "demo"
-    db_secret_arn = "arn:aws:secretsmanager:us-east-2:000000000000:secret:rds!cluster-mock-000000"
+    endpoint            = "mock-aurora.cluster-000000000000.us-east-2.rds.amazonaws.com"
+    port                = 5432
+    db_name             = "demo"
+    master_secret_arn   = "arn:aws:secretsmanager:us-east-2:000000000000:secret:rds!cluster-mock-000000"
+    app_secret_arn      = "arn:aws:secretsmanager:us-east-2:000000000000:secret:migdemo-mock/db/app-000000"
+    migrator_secret_arn = "arn:aws:secretsmanager:us-east-2:000000000000:secret:migdemo-mock/db/migrator-000000"
+    app_username        = "app_user"
+    migrator_username   = "migrator"
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
 }
@@ -47,10 +51,14 @@ inputs = {
   app_security_group_id       = dependency.network.outputs.app_security_group_id
   migration_security_group_id = dependency.network.outputs.migration_security_group_id
 
-  db_host       = dependency.data.outputs.endpoint
-  db_port       = dependency.data.outputs.port
-  db_name       = dependency.data.outputs.db_name
-  db_secret_arn = dependency.data.outputs.db_secret_arn
+  db_host             = dependency.data.outputs.endpoint
+  db_port             = dependency.data.outputs.port
+  db_name             = dependency.data.outputs.db_name
+  master_secret_arn   = dependency.data.outputs.master_secret_arn
+  app_secret_arn      = dependency.data.outputs.app_secret_arn
+  migrator_secret_arn = dependency.data.outputs.migrator_secret_arn
+  app_username        = dependency.data.outputs.app_username
+  migrator_username   = dependency.data.outputs.migrator_username
 
   app_desired_count = local.env.app_desired_count
   budget_limit_usd  = local.env.budget_limit_usd
