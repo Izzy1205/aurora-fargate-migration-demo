@@ -30,15 +30,18 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The tokenization service that fills in those tokens is next.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 22 CloudWatch alarms (including an availability SLO with burn rate alerts and a p95 latency alarm) and a dashboard, and emails the same list if a backup or its copy fails
+- Watches it all with 22 CloudWatch alarms and a dashboard, including an
+  availability SLO with burn rate alerts and a p95 latency alarm. It also
+  emails if a backup job fails.
 
 3) How it all works
 Everything is Terraform, organized with Terragrunt into four layers:
 network, data, app, and observability. Every pull request runs a plan
-plus security scans. Merging to main deploys to testing, and someone
-still has to approve infra changes. If a plan would delete or replace
-something, the pipeline stops and a person has to handle it. Production
-is always a manual deploy. 
+plus security scans. Merging to main deploys to testing on its own. If
+a plan would delete or replace something, the pipeline stops and a
+person has to handle it. Stage and production are set up in code but
+not deployed yet. Production will always be a manual deploy with a
+reviewer.
 
 4) What you need to run it
 - An AWS account and the AWS CLI signed in
@@ -54,8 +57,7 @@ is always a manual deploy.
 Teardown is manual on purpose so the pipeline can never delete things
 on its own. Sign in to AWS first, since an expired session partway
 through leaves a mess. Then run `./scripts/teardown.sh testing`,
-check each plan, and type yes. It deletes the backups in both regions
-too. The bootstrap stays until you remove it yourself.
+check each plan, and type yes. It deletes the backups too. The bootstrap stays until you remove it yourself.
 
 6) How I built this
 I designed it, ran it, and debugged it myself, and I used an AI
