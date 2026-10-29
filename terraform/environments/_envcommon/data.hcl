@@ -1,12 +1,7 @@
-# Data unit (Aurora), shared by every environment.
-
 locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl")).locals
 
-  # Mock outputs let validate and plan run before the network unit has ever
-  # been applied, which is the normal case for a PR or a local plan on a
-  # torn down stack. deploy.yml sets MIGDEMO_MOCKS_ON_PLAN=false so a plan it
-  # is going to apply can only ever see real outputs.
+  # Mocks let PRs plan before network exists. deploy.yml turns them off for real applies.
   mock_commands = get_env("MIGDEMO_MOCKS_ON_PLAN", "true") == "true" ? ["init", "validate", "plan"] : ["init", "validate"]
 }
 
@@ -24,9 +19,7 @@ dependency "network" {
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
 
-  # private_subnet_azs is a new output. Until network has been applied with
-  # it, a PR plan fills it from the mocks instead of failing. deploy.yml
-  # applies network before data, so a real deploy sees the real value.
+  # Lets a PR plan fill new outputs from mocks until network is re-applied.
   mock_outputs_merge_strategy_with_state = "shallow"
 }
 

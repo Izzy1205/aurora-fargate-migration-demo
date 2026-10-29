@@ -1,5 +1,4 @@
-# Read by the app unit through a Terragrunt dependency block. Secret ARNs
-# only, never the values.
+# Secret ARNs only, never the values.
 
 output "endpoint" {
   description = "Writer endpoint."

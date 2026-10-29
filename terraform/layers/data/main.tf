@@ -1,8 +1,3 @@
-# Layer 2 of 3: the Aurora Serverless v2 cluster, in the network layer's
-# private subnets and behind its db security group. A writer, plus readers
-# in the other AZ when aurora_instance_count is above 1. Daily backups are
-# copied to var.dr_region so the data outlives the home region.
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }
@@ -22,9 +17,7 @@ module "database" {
   db_name                  = var.db_name
 }
 
-# Here and not in a layer of its own: the backups belong to the cluster,
-# and a new layer would mean new state, new pipeline steps and a new
-# teardown step. The DR region comes in through the aws.dr provider.
+# Lives with the cluster to avoid a new layer, state and pipeline step.
 module "backup" {
   source = "../../modules/backup"
 
@@ -38,7 +31,6 @@ module "backup" {
   backup_role_name = "${local.name_prefix}-backup"
 }
 
-# A copy in the same region would not survive losing it.
 check "dr_region_differs" {
   assert {
     condition     = module.backup.dr_region != data.aws_region.home.region

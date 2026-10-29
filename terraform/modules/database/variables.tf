@@ -71,10 +71,7 @@ variable "iam_database_authentication_enabled" {
   default     = true
 }
 
-# Days of in-region point in time restore. Was hardcoded at 1. Aurora
-# doesn't charge for backup storage up to the size of the cluster volume,
-# and this cluster holds very little, so 7 days should cost nothing or a
-# few cents. Changing it is an in-place update, no replace.
+# Days of point in time restore. Storage up to cluster size is free.
 variable "backup_retention_period" {
   description = "Days Aurora keeps its automated backups (1 to 35)."
   type        = number

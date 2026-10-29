@@ -13,10 +13,8 @@ variable "backup_role_name" {
   type        = string
 }
 
-# 17:00 UTC is 1 PM Eastern in summer, noon in winter. AWS Backup jobs
-# for Aurora fail if they start during, or in the hour before, the
-# cluster's automated backup or maintenance window. RDS picks both at
-# random from 03:00 to 11:00 UTC in us-east-2, so 17:00 is always clear.
+# Backup jobs fail near the RDS backup/maintenance window (03:00-11:00 UTC).
+# 17:00 UTC is always clear.
 variable "schedule" {
   description = "When the daily backup starts, as an AWS Backup cron expression in UTC."
   type        = string

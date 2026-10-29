@@ -13,8 +13,7 @@ output "endpoint" {
   value       = aws_rds_cluster.this.endpoint
 }
 
-# Spreads connections across the readers. With no readers it points at the
-# writer, so it's always safe to use for reads.
+# Points at the writer when there are no readers.
 output "reader_endpoint" {
   description = "Reader endpoint."
   value       = aws_rds_cluster.this.reader_endpoint

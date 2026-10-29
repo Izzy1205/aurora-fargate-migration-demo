@@ -13,8 +13,6 @@ variable "environment" {
   type        = string
 }
 
-# Read by the provider.tf that Terragrunt generates and by the DR
-# provider in providers.tf.
 variable "owner" {
   description = "Owner tag value. Terragrunt sets it from MIGDEMO_OWNER."
   type        = string

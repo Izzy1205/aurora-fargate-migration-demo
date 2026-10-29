@@ -1,6 +1,4 @@
-# The CI identities and the permissions boundary for the main stack's roles.
-# Applied by hand with admin credentials, never from the pipeline, so the
-# pipeline's terraform role can't widen its own permissions.
+# Applied by hand with admin creds, never from CI, so CI can't widen its own permissions.
 
 provider "aws" {
   region = var.aws_region
