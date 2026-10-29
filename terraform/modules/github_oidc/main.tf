@@ -13,20 +13,29 @@ locals {
   # These names must match what the main stack creates (see modules/ecs and
   # modules/registry). They are built here so this stack does not depend on
   # the main stack's state.
-  cluster_arn         = "arn:${local.part}:ecs:${local.region}:${local.account}:cluster/${local.p}-cluster"
-  service_arn         = "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.p}-cluster/${local.p}-app"
-  migration_taskdef   = "arn:${local.part}:ecs:${local.region}:${local.account}:task-definition/${local.p}-migrate:*"
+  cluster_arn = "arn:${local.part}:ecs:${local.region}:${local.account}:cluster/${local.p}-cluster"
+  service_arn = "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.p}-cluster/${local.p}-app"
+  runnable_taskdefs = [
+    for f in ["migrate", "db-logins"] :
+    "arn:${local.part}:ecs:${local.region}:${local.account}:task-definition/${local.p}-${f}:*"
+  ]
   cluster_tasks       = "arn:${local.part}:ecs:${local.region}:${local.account}:task/${local.p}-cluster/*"
   ecr_repo_arns       = [for r in ["app", "migrate"] : "arn:${local.part}:ecr:${local.region}:${local.account}:repository/${local.p}/${r}"]
   migration_log_group = "arn:${local.part}:logs:${local.region}:${local.account}:log-group:/ecs/${local.p}/migrate:*"
   passable_roles = [
-    for r in ["app-execution", "app-task", "migrate-execution", "migrate-task"] :
+    for r in [
+      "app-execution", "app-task",
+      "migrate-execution", "migrate-task",
+      "db-logins-execution", "db-logins-task",
+    ] :
     "arn:${local.part}:iam::${local.account}:role/${local.p}-${r}"
   ]
 
-  # RDS-managed secrets are always named rds!<resource>-<id>.
-  rds_secrets = "arn:${local.part}:secretsmanager:*:${local.account}:secret:rds!*"
-  ci_roles    = "arn:${local.part}:iam::${local.account}:role/${local.p}-github-*"
+  # RDS-managed secrets are always named rds!<resource>-<id>. The app and
+  # Flyway logins live under <prefix>/db/ (see modules/database/logins.tf).
+  rds_secrets   = "arn:${local.part}:secretsmanager:*:${local.account}:secret:rds!*"
+  login_secrets = "arn:${local.part}:secretsmanager:*:${local.account}:secret:${local.p}/db/*"
+  ci_roles      = "arn:${local.part}:iam::${local.account}:role/${local.p}-github-*"
 
   # Roles the main stack creates. Each must carry the workload boundary
   # (boundary.tf), which the main stack finds by name.
@@ -88,12 +97,14 @@ data "aws_iam_policy_document" "trust" {
   }
 }
 
-# Shared guardrail: no CI role can read the database credentials.
+# Shared guardrail: no CI role can read the database credentials. Terraform
+# still manages the login secrets, because their value is write-only: it is
+# written once and refresh only lists the version IDs, it never reads it back.
 data "aws_iam_policy_document" "deny_db_secret" {
   statement {
     sid       = "NoDbCredentials"
     effect    = "Deny"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [local.rds_secrets]
+    resources = [local.rds_secrets, local.login_secrets]
   }
 }
