@@ -37,5 +37,9 @@ locals {
     waf_blocked_requests = 500
     # Bigger backlog is normal at peak; still well under the retention.
     queue_oldest_message_seconds = 600
+    # Same as the module defaults, written out so the promise is easy to
+    # find. See modules/observability/slo.tf for what they drive.
+    slo_availability_percent = 99.9
+    latency_p95_seconds      = 1
   }
 }

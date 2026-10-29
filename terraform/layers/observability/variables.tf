@@ -82,7 +82,8 @@ variable "alarm_thresholds" {
     condition = alltrue([for k in keys(var.alarm_thresholds) : contains([
       "elb_5xx_count", "target_5xx_count", "ecs_cpu_percent", "ecs_memory_percent",
       "aurora_cpu_percent", "aurora_acu_percent", "aurora_freeable_memory_bytes", "aurora_connections",
-      "waf_blocked_requests", "queue_oldest_message_seconds",
+      "aurora_replica_lag_ms", "waf_blocked_requests", "queue_oldest_message_seconds",
+      "slo_availability_percent", "latency_p95_seconds",
     ], k)])
     error_message = "Unknown key in alarm_thresholds. See modules/observability/variables.tf for the list."
   }
