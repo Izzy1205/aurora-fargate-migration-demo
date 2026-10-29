@@ -23,5 +23,5 @@ variable "visibility_timeout_seconds" {
 variable "message_retention_seconds" {
   description = "How long the main queue keeps a message. The DLQ always keeps 14 days."
   type        = number
-  default     = 345600 # 4 days, the SQS default
+  default     = 345600 # 4 days, the default
 }

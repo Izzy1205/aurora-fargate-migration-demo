@@ -18,7 +18,6 @@ from psycopg.rows import dict_row
 
 from .presenters import order_columns_to_select
 
-
 @dataclass(frozen=True)
 class DbSettings:
     host: str
@@ -31,7 +30,6 @@ class DbSettings:
 
     @classmethod
     def from_env(cls) -> "DbSettings":
-        # DB_USER and DB_PASSWORD are injected by ECS from Secrets Manager.
         return cls(
             host=os.environ["DB_HOST"],
             port=int(os.environ.get("DB_PORT", "5432")),
@@ -42,7 +40,6 @@ class DbSettings:
             # Long enough for a paused Aurora cluster to resume.
             connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "20")),
         )
-
 
 class Repository:
     """Read-only queries the app needs."""
@@ -73,8 +70,7 @@ class Repository:
             conn.execute("SELECT 1")
 
     def _existing_order_columns(self, conn: psycopg.Connection[Any]) -> set[str]:
-        # Cached briefly so a new column shows up within seconds of the
-        # migration, without a restart.
+        # Cached briefly so a new column shows up without a restart.
         now = time.monotonic()
         if self._order_columns is None or now - self._order_columns_at > self._columns_ttl_seconds:
             rows = conn.execute(
@@ -95,8 +91,7 @@ class Repository:
     def list_orders(self, limit: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
             cols = order_columns_to_select(self._existing_order_columns(conn))
-            # Column names come from a fixed allow-list and are quoted as
-            # identifiers; the limit is a bound parameter.
+            # Columns come from an allow-list; limit is a bound param.
             query = sql.SQL("SELECT {cols} FROM orders ORDER BY id DESC LIMIT %s").format(
                 cols=sql.SQL(", ").join(sql.Identifier(c) for c in cols)
             )

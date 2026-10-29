@@ -1,13 +1,5 @@
-# Payment requests queue with a dead letter queue.
-#
-# This is the platform guardrail, not the payment logic. The app team writes
-# the consumer and owns idempotency: every message carries an idempotency
-# key, and the consumer must treat a repeat of that key as already done.
-# SQS standard queues deliver at least once, so repeats will happen.
-#
-# A message that fails max_receive_count times moves to the DLQ and an alarm
-# fires (modules/observability). Nothing is retried from the DLQ
-# automatically; someone looks at it, then redrives it from the console.
+# Platform side only. SQS delivers at least once, so the consumer must be idempotent.
+# DLQ messages aren't redriven automatically.
 
 locals {
   name = "${var.name_prefix}-payment-requests"
@@ -15,7 +7,7 @@ locals {
 
 resource "aws_sqs_queue" "dlq" {
   name                              = "${local.name}-dlq"
-  message_retention_seconds         = 1209600 # 14 days, the SQS maximum
+  message_retention_seconds         = 1209600 # 14 days, the max
   kms_master_key_id                 = aws_kms_key.queue.arn
   kms_data_key_reuse_period_seconds = 300
 }
@@ -24,7 +16,7 @@ resource "aws_sqs_queue" "main" {
   name                              = local.name
   visibility_timeout_seconds        = var.visibility_timeout_seconds
   message_retention_seconds         = var.message_retention_seconds
-  receive_wait_time_seconds         = 20 # long polling, fewer empty receives
+  receive_wait_time_seconds         = 20 # long polling
   kms_master_key_id                 = aws_kms_key.queue.arn
   kms_data_key_reuse_period_seconds = 300
 
@@ -34,7 +26,6 @@ resource "aws_sqs_queue" "main" {
   })
 }
 
-# Only the main queue may use the DLQ as its dead letter target.
 resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
   queue_url = aws_sqs_queue.dlq.id
   redrive_allow_policy = jsonencode({
@@ -43,8 +34,7 @@ resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
   })
 }
 
-# Refuse anything not sent over TLS. The endpoint is HTTPS anyway; this
-# makes it a rule instead of a habit.
+# Reject anything not over TLS.
 resource "aws_sqs_queue_policy" "tls_only" {
   for_each = {
     main = aws_sqs_queue.main
@@ -78,9 +68,7 @@ data "aws_iam_policy_document" "tls_only" {
   }
 }
 
-# What the app task needs: send, receive, delete and read attributes on the
-# main queue, and use the key only through SQS. Nothing on the DLQ; people
-# handle that. layers/app attaches it to the app task role.
+# Send, receive, delete on the main queue. Nothing on the DLQ.
 data "aws_iam_policy_document" "task" {
   statement {
     sid = "PaymentQueue"

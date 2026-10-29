@@ -1,9 +1,6 @@
-# App unit (ECR, ECS, ALB and its WAF, budget), shared by every environment.
-
 locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl")).locals
 
-  # See data.hcl for why this switch exists.
   mock_commands = get_env("MIGDEMO_MOCKS_ON_PLAN", "true") == "true" ? ["init", "validate", "plan"] : ["init", "validate"]
 }
 

@@ -3,8 +3,7 @@ FROM python:3.13-slim AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY requirements.txt .
-# Remove pip once the venv is built. The app never uses it, and its vendored
-# urllib3, setuptools and msgpack trip Trivy.
+# Drop pip after the venv is built. Its vendored libs trip Trivy.
 RUN python -m venv /venv && /venv/bin/pip install --require-virtualenv -r requirements.txt \
  && /venv/bin/pip uninstall --yes pip
 
@@ -16,8 +15,7 @@ ENV PATH=/venv/bin:$PATH \
     PYTHONPATH=/srv/src \
     APP_VERSION=${APP_VERSION} \
     PORT=8000
-# Same for the base image's pip. /venv isn't copied yet, so this is the
-# system Python.
+# Same for the base image's pip.
 RUN /usr/local/bin/python -m pip uninstall --yes pip \
  && groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --no-create-home app
 COPY --from=build /venv /venv

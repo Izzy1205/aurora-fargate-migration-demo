@@ -1,7 +1,3 @@
-# Layer 4: alarms, the SNS topic they send to, and one dashboard. Runs after
-# app. Nothing here changes how the other units behave; it only reads their
-# names and IDs.
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }

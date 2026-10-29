@@ -1,5 +1,4 @@
-# All security groups live here so the database and ECS modules can reference
-# each other's groups without a dependency cycle.
+# All SGs live here to avoid a dependency cycle between modules.
 
 data "aws_ec2_managed_prefix_list" "s3" {
   name = "com.amazonaws.${data.aws_region.current.region}.s3"

@@ -1,7 +1,6 @@
 name: pr
 
-# Nothing here can change AWS. The plan job uses the read-only role and the
-# rest have no AWS access.
+# Nothing here can change AWS.
 on:
   pull_request:
     branches: [main]
@@ -18,9 +17,7 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
-# The actions that get AWS credentials or install Terraform (and Trivy) are
-# pinned to commit SHAs, with the version in a comment so Dependabot can bump
-# them. The rest are still on major tags. TODO: pin those too.
+# TODO: pin the remaining actions to SHAs too.
 
 jobs:
   terraform:
@@ -28,14 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write       # OIDC token for the read-only plan role
-      pull-requests: write  # post the plan as a PR comment
+      id-token: write
+      pull-requests: write
     defaults:
       run:
         working-directory: terraform
-        shell: bash  # -eo pipefail, so a failed plan isn't hidden by tee
+        shell: bash  # -eo pipefail so tee doesn't hide a failed plan
     env:
-      # Read by root.hcl and _envcommon through get_env, not as TF_VAR_.
       MIGDEMO_OWNER: ${{ vars.OWNER }}
       MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
       MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
@@ -64,8 +60,6 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Checks every env, including the ones that aren't deployed, against
-      # mocked dependency outputs. No AWS access needed.
       - name: terragrunt validate
         working-directory: terraform/environments
         run: |
@@ -76,12 +70,12 @@ jobs:
 
       - name: tflint
         env:
-          GITHUB_TOKEN: ${{ github.token }}  # avoids GitHub API rate limits when fetching the AWS ruleset
+          GITHUB_TOKEN: ${{ github.token }}  # avoids API rate limits
         run: |
           tflint --init
           tflint --recursive --config "$PWD/.tflint.hcl" --format compact
 
-      # Fork PRs get no OIDC token, so plan only runs for branches in this repo.
+      # Fork PRs get no OIDC token.
       - name: AWS credentials (read-only plan role)
         if: github.event.pull_request.head.repo.full_name == github.repository
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -90,10 +84,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-plan-${{ github.run_id }}
 
-      # One unit at a time in dependency order, so plan.txt has a header per
-      # unit. If an upstream unit has no state yet (or its outputs would
-      # change), the units after it are planned against mock outputs. This plan is
-      # for review only and is never applied; deploy.yml makes its own.
+      # Review only, never applied. Downstream units fall back to mocks if upstream has no state.
       - name: plan
         id: plan
         if: github.event.pull_request.head.repo.full_name == github.repository
@@ -164,8 +155,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          # Throwaway container on the runner. Trust auth so there's no
-          # password in the file at all, not even a fake one.
+          # Throwaway container, so no password at all.
           POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
@@ -177,8 +167,7 @@ jobs:
       - name: build migration image
         run: docker build -t demo-migrate:ci db
 
-      # Same order as a deploy to a stack built before the separate logins:
-      # V2 as the old owner, then db-logins, then the rest as the Flyway login.
+      # Same order as a deploy to a stack built before the separate logins.
       - name: migrate to V2 (state before this release) as the admin user
         run: |
           docker run --rm --network host \
@@ -188,8 +177,7 @@ jobs:
 
       - name: set up DB logins the way the db-logins task does
         run: |
-          # Trust auth ignores passwords, but the script requires them. These
-          # are random, never printed, and only live in this job.
+          # Random, never printed. Trust auth ignores them anyway.
           APP_DB_PASSWORD=$(openssl rand -hex 20)
           MIGRATOR_DB_PASSWORD=$(openssl rand -hex 20)
           PGPASSWORD=$(openssl rand -hex 20)
@@ -279,8 +267,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      # Medium severity and confidence or higher fails. Tests are excluded
-      # since they're full of asserts and fake values.
+      # Tests excluded, they're full of asserts.
       - name: bandit
         run: |
           pip install --quiet bandit==1.9.4
@@ -295,7 +282,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      # Any known CVE in the pins or their dependencies fails the job.
       - name: pip-audit
         run: |
           pip install --quiet pip-audit==2.10.1
@@ -307,19 +293,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write  # upload results to the Security tab
+      security-events: write
     steps:
       - uses: actions/checkout@v7
 
-      # Built on the runner, never pushed.
       - name: build images
         run: |
           docker build -t demo-app:ci app
           docker build -t demo-migrate:ci db
 
-      # Pinned to a SHA, not a tag. Trivy's tags were hijacked in March 2026
-      # (GHSA-69fq-xp46-6x23) and a SHA can't be moved. ignore-unfixed skips
-      # CVEs with nothing to upgrade to yet.
+      # SHA pin: Trivy's tags were hijacked in March 2026 (GHSA-69fq-xp46-6x23).
       - name: scan app image (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -341,7 +324,7 @@ jobs:
           format: sarif
           output: trivy-migrate.sarif
 
-      # Fork PRs get a read-only token, so only same-repo PRs upload.
+      # Fork PRs get a read-only token.
       - name: upload app results to Security tab
         if: github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v4
@@ -356,7 +339,7 @@ jobs:
           sarif_file: trivy-migrate.sarif
           category: trivy-migrate-image
 
-      # The actual gate: a fixable HIGH or CRITICAL in either image fails.
+      # Fixable HIGH or CRITICAL fails.
       - name: gate on app image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

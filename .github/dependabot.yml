@@ -1,7 +1,4 @@
-# Weekly version bumps. CVE fixes don't wait for this, they come from
-# Dependabot security updates in the repo settings.
-# Minor and patch bumps are grouped per ecosystem to cut noise. Majors come one
-# per PR so I actually look at them.
+# Weekly bumps. Security fixes come from Dependabot security updates instead.
 version: 2
 updates:
   - package-ecosystem: pip
@@ -30,9 +27,7 @@ updates:
       actions-minor:
         update-types: [minor, patch]
 
-  # The committed lock files live in each Terragrunt unit folder under
-  # terraform/environments, which Dependabot can't update. After a provider
-  # bump here, refresh them with `terraform providers lock` (see README).
+  # Lock files under environments/ aren't updated by Dependabot. Run `terraform providers lock`.
   - package-ecosystem: terraform
     directories:
       - /terraform/bootstrap

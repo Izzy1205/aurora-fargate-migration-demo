@@ -1,5 +1,4 @@
--- Release N+1: backfill old rows. Small batches keep row locks short.
--- On a big table run this from a job that loops until 0 rows update.
+-- Release N+1: backfill in small batches to keep row locks short.
 UPDATE orders
 SET priority = 'standard'
 WHERE id IN (

@@ -58,8 +58,7 @@ variable "aurora_cluster_identifier" {
   type        = string
 }
 
-# The defaults suit the testing env: 2 tasks of 0.25 vCPU, Aurora 0 to 2 ACU,
-# a handful of demo users. Anything left out keeps its default.
+# Defaults sized for testing.
 variable "thresholds" {
   description = "Alarm thresholds. See the README monitoring section for what each one means."
   type = object({
@@ -74,13 +73,12 @@ variable "thresholds" {
     aurora_replica_lag_ms        = optional(number, 1000) # worst reader, milliseconds
     waf_blocked_requests         = optional(number, 100)  # blocked in 5 minutes
     queue_oldest_message_seconds = optional(number, 300)
-    slo_availability_percent     = optional(number, 99.9) # good requests over 30 days, see slo.tf
+    slo_availability_percent     = optional(number, 99.9) # good requests over 30 days
     latency_p95_seconds          = optional(number, 1)    # p95 app response time
   })
   default = {}
 
-  # Under about 93% a 14.4x burn would need more than 100% errors, so the
-  # fast burn alarm could never fire. 100 leaves no budget at all.
+  # Under about 93% a 14.4x burn can never fire.
   validation {
     condition     = var.thresholds.slo_availability_percent >= 95 && var.thresholds.slo_availability_percent < 100
     error_message = "slo_availability_percent must be at least 95 and below 100."

@@ -1,8 +1,7 @@
 name: setup-terragrunt
 description: Install a pinned Terragrunt release and check it against a known sha256.
 
-# Bumping the version means updating both inputs together. The sha256 is the
-# terragrunt_linux_amd64 line from that release's SHA256SUMS file.
+# Bump both together. sha256 is the linux_amd64 line from SHA256SUMS.
 inputs:
   version:
     description: Terragrunt release tag.

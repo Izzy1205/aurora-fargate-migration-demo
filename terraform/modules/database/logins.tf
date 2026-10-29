@@ -1,14 +1,5 @@
-# Separate logins for the app and for Flyway, so neither one runs as the
-# Aurora master user. The master stays managed by RDS and is only read by the
-# one-off db-logins task (modules/ecs), which creates these two roles and
-# sets their passwords from the secrets below.
-#
-# The passwords never land in state or in a plan: random_password is
-# ephemeral and the secret value is write-only. Terraform writes the value
-# once and only reads the version metadata back, so no CI role ever needs
-# GetSecretValue on these secrets. To rotate, bump login_password_version,
-# apply, then run a deploy so db-logins sets the new passwords and the app
-# and Flyway tasks pick them up.
+# Separate app and Flyway logins so nothing runs as master. Passwords are write-only,
+# never in state. To rotate: bump login_password_version, apply, deploy.
 
 locals {
   db_logins = {

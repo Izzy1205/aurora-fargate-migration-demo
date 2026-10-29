@@ -13,8 +13,6 @@ variable "environment" {
   type        = string
 }
 
-# Only read by the provider.tf that Terragrunt generates, which tflint does
-# not see when it lints this folder on its own.
 # tflint-ignore: terraform_unused_declarations
 variable "owner" {
   description = "Owner tag value. Terragrunt sets it from MIGDEMO_OWNER."

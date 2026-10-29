@@ -1,7 +1,3 @@
-# One dashboard with the same metrics the alarms watch, plus the SLO
-# widgets (SLI, burn rate, p95 latency) at the bottom. The first three
-# dashboards in an account are free, after that it's $3 a month.
-
 locals {
   region = data.aws_region.current.region
 
@@ -90,8 +86,7 @@ locals {
         concat(["AWS/SQS", "ApproximateAgeOfOldestMessage"], local.queue),
       ]
     },
-    # SLO widgets, using the same math as the alarms in slo.tf. The raw
-    # counts are hidden and only feed the expressions.
+    # SLO widgets, same math as slo.tf.
     {
       title   = "Availability SLI (% good requests per 5 min)"
       stat    = "Sum"
@@ -123,7 +118,6 @@ locals {
     },
   ]
 
-  # Inputs for the SLI and burn rate widgets. Same ids as slo.tf.
   sli_inputs = [
     ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", local.lb, { id = "requests", visible = false }],
     ["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", local.lb, { id = "elb5xx", visible = false }],
@@ -136,7 +130,6 @@ locals {
 resource "aws_cloudwatch_dashboard" "this" {
   dashboard_name = var.name_prefix
 
-  # Two widgets per row, each 12 wide and 6 tall.
   dashboard_body = jsonencode({
     widgets = [
       for i, w in local.widgets : {
@@ -145,8 +138,7 @@ resource "aws_cloudwatch_dashboard" "this" {
         y      = floor(i / 2) * 6
         width  = 12
         height = 6
-        # Annotations only go on widgets that set them, so the older
-        # widgets render exactly as before.
+        # Only widgets that set annotations get them, so older ones render as before.
         properties = merge({
           title   = w.title
           region  = local.region

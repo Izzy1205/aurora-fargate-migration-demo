@@ -28,26 +28,21 @@ APP_VERSION = os.environ.get("APP_VERSION", "dev")
 
 app = FastAPI(title="Migration demo", version=APP_VERSION, docs_url=None, redoc_url=None)
 
-
 @lru_cache(maxsize=1)
 def get_repository() -> Repository:
     return Repository(DbSettings.from_env())
 
-
 Repo = Annotated[Repository, Depends(get_repository)]
 Limit = Annotated[int, Query(ge=1, le=100)]
 
-
 def _db_unavailable(exc: Exception) -> HTTPException:
-    # Log the detail, return a generic message. No hostnames or errors leak.
+    # Generic message so no hostnames or errors leak.
     log.warning("database call failed: %s", type(exc).__name__)
     return HTTPException(status_code=503, detail="database unavailable")
-
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "version": APP_VERSION}
-
 
 @app.get("/ready")
 def ready(repo: Repo) -> dict[str, str]:
@@ -56,7 +51,6 @@ def ready(repo: Repo) -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001 - any failure means not ready
         raise _db_unavailable(exc) from exc
     return {"status": "ready"}
-
 
 @app.get("/orders")
 def orders(repo: Repo, limit: Limit = 20) -> dict[str, Any]:
@@ -71,7 +65,6 @@ def orders(repo: Repo, limit: Limit = 20) -> dict[str, Any]:
         "orders": [present_order(r) for r in rows],
     }
 
-
 @app.get("/customers")
 def customers(repo: Repo, limit: Limit = 20) -> dict[str, Any]:
     try:
@@ -79,7 +72,6 @@ def customers(repo: Repo, limit: Limit = 20) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         raise _db_unavailable(exc) from exc
     return {"customers": [present_customer(r) for r in rows]}
-
 
 @app.get("/", response_class=HTMLResponse)
 def index(repo: Repo) -> str:

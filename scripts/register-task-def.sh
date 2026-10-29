@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Register a new revision of an ECS task definition with one container's
-# image swapped. Everything else (roles, env, secret ARNs) is copied from the
-# latest revision, which Terraform owns.
-#
+# Registers a new task def revision with one container's image swapped.
 # Usage: register-task-def.sh <family> <container-name> <image>
-# Prints the new task definition ARN.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then

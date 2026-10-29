@@ -11,10 +11,9 @@ from typing import Any, Mapping
 DEFAULT_PRIORITY = "standard"
 KNOWN_PRIORITIES = frozenset({"standard", "expedited", "overnight"})
 
-# Columns the app knows about. "priority" arrived in V3 and may not exist yet.
+# "priority" came in V3 and may not exist yet.
 BASE_ORDER_COLUMNS = ("id", "customer_id", "status", "total_cents", "created_at")
 OPTIONAL_ORDER_COLUMNS = ("priority",)
-
 
 def order_columns_to_select(existing_columns: set[str]) -> list[str]:
     """Columns to select from orders, given what the table has right now.
@@ -24,13 +23,11 @@ def order_columns_to_select(existing_columns: set[str]) -> list[str]:
     """
     return list(BASE_ORDER_COLUMNS) + [c for c in OPTIONAL_ORDER_COLUMNS if c in existing_columns]
 
-
 def display_priority(raw: Any) -> str:
     """Map a stored priority to what users see. NULL, missing or unknown means standard."""
     if isinstance(raw, str) and raw.strip().lower() in KNOWN_PRIORITIES:
         return raw.strip().lower()
     return DEFAULT_PRIORITY
-
 
 def present_order(row: Mapping[str, Any]) -> dict[str, Any]:
     """Shape one orders row for the API.
@@ -49,7 +46,6 @@ def present_order(row: Mapping[str, Any]) -> dict[str, Any]:
         "priority": display_priority(raw_priority),
         "priority_set": raw_priority is not None,
     }
-
 
 def present_customer(row: Mapping[str, Any]) -> dict[str, Any]:
     """Shape one customers row for the API."""

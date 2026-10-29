@@ -1,6 +1,4 @@
-# WAF logs to CloudWatch Logs. AWS only accepts a destination whose name
-# starts with aws-waf-logs-. Same retention and encryption as the other log
-# groups in this repo (AWS managed, see .checkov.yaml for why not a CMK).
+# Destination name must start with aws-waf-logs-.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -11,9 +9,7 @@ resource "aws_cloudwatch_log_group" "waf" {
   retention_in_days = var.log_retention_days
 }
 
-# Our own resource policy for the log delivery service. Without it WAF adds
-# this log group to a shared AWSWAF-LOGS policy, which can outgrow the size
-# limit in an account that creates and deletes web ACLs often.
+# Own policy so WAF doesn't grow the shared AWSWAF-LOGS one past its size limit.
 resource "aws_cloudwatch_log_resource_policy" "waf" {
   policy_name     = "${var.name_prefix}-waf-logs"
   policy_document = data.aws_iam_policy_document.waf_logs.json
@@ -45,7 +41,7 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
   resource_arn            = aws_wafv2_web_acl.this.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
 
-  # Header names have to be lowercase here.
+  # Header names must be lowercase here.
   redacted_fields {
     single_header {
       name = "authorization"

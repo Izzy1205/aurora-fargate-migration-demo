@@ -1,13 +1,6 @@
 name: tg-plan
 
-# Called by deploy.yml once per unit. Plans one Terragrunt unit with the
-# read-only plan role against the real outputs of the units it depends on
-# (mocks are switched off), and keeps the binary plan in the state bucket.
-#
-# The repo is public, and so are its Actions artifacts to anyone signed in to
-# GitHub. So the artifact only holds the readable plan (sensitive values are
-# redacted by terraform show) and the binary plan's sha256. The binary plan
-# can hold real values, so it goes to the private state bucket instead.
+# Public repo: artifacts only get the redacted plan text. Binary plan goes to the state bucket.
 on:
   workflow_call:
     inputs:
@@ -52,8 +45,7 @@ jobs:
       MIGDEMO_OWNER: ${{ vars.OWNER }}
       MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
       MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
-      # Plan against real upstream outputs only. If an upstream unit has no
-      # state, this plan fails instead of quietly using mock values.
+      # No mocks: fail if an upstream unit has no state.
       MIGDEMO_MOCKS_ON_PLAN: "false"
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_REGION: ${{ vars.AWS_REGION }}
@@ -81,8 +73,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-plan-${{ github.run_id }}
 
-      # Terragrunt runs Terraform inside .terragrunt-cache, so the plan file
-      # path has to be absolute. -detailed-exitcode: 0 no changes, 2 changes.
+      # Plan path must be absolute since Terragrunt runs inside .terragrunt-cache.
       - name: plan
         id: plan
         run: |
@@ -111,15 +102,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Second check on top of the reviewer. Testing applies wait for a
-      # reviewer in the testing-infra environment (tg-apply.yml), and the
-      # release job waits in testing-app. This plan job runs in
-      # <env>-infra-plan, which only has a main branch rule and no reviewer.
-      # Stage isn't deployed yet, and production isn't wired up here yet.
-      # Reviewer rules live in the GitHub environment settings, not in this
-      # repo. A reviewer can miss one destroy line in a long plan, so any
-      # delete or replace stops here. Real teardowns are done by hand with
-      # scripts/teardown.sh, not through this pipeline.
+      # Backstop for the reviewer: any delete or replace stops here. Teardown is by hand.
       - name: block deletes and replaces
         if: steps.plan.outputs.has_changes == 'true'
         run: |

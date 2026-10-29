@@ -1,15 +1,10 @@
-# Layer 3: ECR repos, the ECS cluster, ALB and its WAF, task definitions and
-# service, the payment queue, plus the cost budget. Network and database
-# values come in as variables from the other two units.
-
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
   name_prefix = "${var.project}-${var.environment}"
 
-  # Created by terraform/bootstrap. The terraform role can only create roles
-  # that carry it, so every role in this stack gets it.
+  # Made by bootstrap. CI can only create roles that carry it.
   permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${local.name_prefix}-workload-boundary"
 }
 
@@ -51,8 +46,7 @@ module "ecs" {
   ]
 }
 
-# Payment requests queue and its DLQ. The app team writes the consumer and
-# the idempotency handling; this is the platform side.
+# Platform side only. The app team owns the consumer and idempotency.
 module "queue" {
   source = "../../modules/queue"
 
@@ -66,8 +60,6 @@ resource "aws_iam_role_policy" "app_payment_queue" {
   policy = module.queue.task_policy_json
 }
 
-# Web ACL on the ALB. Lives in this unit so it's created and destroyed with
-# the ALB it protects.
 module "waf" {
   source = "../../modules/waf"
 

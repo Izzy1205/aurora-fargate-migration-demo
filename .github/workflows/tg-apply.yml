@@ -1,10 +1,6 @@
 name: tg-apply
 
-# Called by deploy.yml once per unit, after tg-plan. Waits for review in the
-# <env>-infra environment, then applies the exact saved plan with the
-# terraform role. A saved plan refuses to apply if the Terraform version,
-# backend or providers differ from the plan job, or if the state changed
-# since the plan was made.
+# Applies the exact saved plan from tg-plan after review.
 on:
   workflow_call:
     inputs:
@@ -42,8 +38,7 @@ jobs:
         working-directory: terraform
         shell: bash
     env:
-      # Terragrunt still evaluates the unit's inputs on apply, so these have
-      # to be set. A saved plan ignores them and applies what was reviewed.
+      # Terragrunt still evaluates inputs on apply. The saved plan ignores them.
       MIGDEMO_OWNER: ${{ vars.OWNER }}
       MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
       MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
@@ -56,8 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Same Terraform and Terragrunt versions, backend and lock file as the
-      # plan job.
+      # Must match the plan job.
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TF_VERSION }}

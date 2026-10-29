@@ -1,13 +1,9 @@
-# Network unit, shared by every environment. The unit folder only includes
-# this file and root.hcl; the values come from that environment's env.hcl.
-
 locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl")).locals
 }
 
 terraform {
-  # The double slash copies all of terraform/ into the cache, so the layer's
-  # ../../modules paths still resolve there.
+  # Double slash copies all of terraform/ so ../../modules still resolves.
   source = "${dirname(find_in_parent_folders("root.hcl"))}//layers/network"
 }
 
@@ -16,7 +12,6 @@ inputs = {
   vpc_cidr            = local.env.vpc_cidr
   single_az_endpoints = !local.env.multi_az
 
-  # JSON list, for example ["203.0.113.10/32"]. Same value the flat stack
-  # took from TF_VAR_alb_ingress_cidrs.
+  # JSON list, e.g. ["203.0.113.10/32"]
   alb_ingress_cidrs = jsondecode(get_env("MIGDEMO_ALB_INGRESS_CIDRS"))
 }

@@ -5,7 +5,7 @@ resource "aws_ecs_cluster" "this" {
 
   setting {
     name  = "containerInsights"
-    value = "disabled" # costs extra; turn on outside a demo
+    value = "disabled" # costs extra
   }
 }
 
@@ -41,9 +41,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "DB_SSLMODE", value = "require" },
       { name = "PORT", value = tostring(var.app_port) },
     ], var.app_environment)
-    # Injected by the ECS agent at task start from the app login secret,
-    # which only gets row access. The values never pass through Terraform,
-    # GitHub or the image.
+    # App login only gets row access.
     secrets = [
       { name = "DB_USER", valueFrom = "${var.app_secret_arn}:username::" },
       { name = "DB_PASSWORD", valueFrom = "${var.app_secret_arn}:password::" },
@@ -80,12 +78,12 @@ resource "aws_ecs_task_definition" "migration" {
     command   = ["migrate"]
     environment = [
       { name = "FLYWAY_URL", value = "jdbc:postgresql://${var.db_host}:${var.db_port}/${var.db_name}?sslmode=require" },
-      # Aurora may be paused at zero ACUs; give it time to resume.
+      # Aurora may be paused, give it time to resume.
       { name = "FLYWAY_CONNECT_RETRIES", value = "12" },
       { name = "FLYWAY_CLEAN_DISABLED", value = "true" },
       { name = "FLYWAY_VALIDATE_MIGRATION_NAMING", value = "true" },
     ]
-    # The Flyway login owns the schema. It is not the master user.
+    # Flyway login owns the schema, not master.
     secrets = [
       { name = "FLYWAY_USER", valueFrom = "${var.migrator_secret_arn}:username::" },
       { name = "FLYWAY_PASSWORD", valueFrom = "${var.migrator_secret_arn}:password::" },
@@ -101,11 +99,7 @@ resource "aws_ecs_task_definition" "migration" {
   }])
 }
 
-# One-off task that creates the app and Flyway logins and sets their
-# passwords. It is the only thing that reads the master secret, and CI runs
-# it before Flyway on every deploy. It is safe to re-run: it only creates
-# what is missing and re-applies the same grants. Same image as Flyway, with
-# a different entrypoint (db/logins/db-logins.sh).
+# Creates the app and Flyway logins. Only thing that reads the master secret. Safe to re-run.
 resource "aws_ecs_task_definition" "db_logins" {
   family                   = "${var.name_prefix}-db-logins"
   requires_compatibilities = ["FARGATE"]
@@ -151,13 +145,7 @@ resource "aws_ecs_task_definition" "db_logins" {
   }])
 }
 
-# Starts at zero tasks. CI picks the revision and scales it to 2 after the
-# migration, so Terraform ignores those fields.
-#
-# Fargate spreads a service's tasks across the AZs of its subnets, so with two
-# private subnets the 2 tasks land one per AZ. Rebalancing moves them back if
-# an AZ outage left both in one AZ. During a deploy ECS starts 2 new tasks
-# before stopping the old ones (100% min healthy, 200% max).
+# Starts at zero. CI picks the revision and scales it, so those fields are ignored.
 resource "aws_ecs_service" "app" {
   name                               = "${var.name_prefix}-app"
   cluster                            = aws_ecs_cluster.this.id

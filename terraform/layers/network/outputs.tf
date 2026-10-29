@@ -1,5 +1,3 @@
-# Read by the data and app units through Terragrunt dependency blocks.
-
 output "vpc_id" {
   description = "VPC ID."
   value       = module.network.vpc_id
@@ -15,8 +13,6 @@ output "private_subnet_ids" {
   value       = module.network.private_subnet_ids
 }
 
-# The data unit uses this to put the Aurora reader in a different AZ from
-# the writer.
 output "private_subnet_azs" {
   description = "AZs of the private subnets, in the same order as private_subnet_ids."
   value       = module.network.private_subnet_azs

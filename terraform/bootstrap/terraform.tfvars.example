@@ -5,7 +5,5 @@ github_repo                 = "REPLACE-ME-github-user/aurora-fargate-migration-d
 state_bucket_name           = "REPLACE-ME-tfstate-bucket"
 create_github_oidc_provider = true
 
-# If the CI log says "Not authorized to perform sts:AssumeRoleWithWebIdentity",
-# GitHub is probably sending the immutable subject. Add the sub_claim_prefix from:
-#   gh api repos/OWNER/NAME/actions/oidc/customization/sub
+# If CI can't AssumeRoleWithWebIdentity, add the immutable subject:
 # github_subject_prefixes = ["repo:OWNER@OWNER_ID/NAME@REPO_ID"]

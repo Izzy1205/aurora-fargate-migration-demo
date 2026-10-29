@@ -4,7 +4,7 @@ resource "aws_ecr_repository" "this" {
   name                 = "${var.name_prefix}/${each.value}"
   image_tag_mutability = "IMMUTABLE"
 
-  # DEMO ONLY: lets terraform destroy remove repos that still hold images.
+  # Demo only: lets destroy remove repos with images.
   force_delete = true
 
   image_scanning_configuration {

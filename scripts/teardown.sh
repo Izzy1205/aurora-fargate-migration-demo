@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Tears down one environment, newest layer first.
-# Shows each destroy plan and waits for a "yes" before applying it.
-# Run from the repo root, e.g.:
-#   ./scripts/teardown.sh testing
+# Tears down one env, newest layer first, asking before each destroy.
+# Usage: ./scripts/teardown.sh testing
 set -euo pipefail
 
 env="${1:-testing}"
@@ -10,14 +8,12 @@ env_dir="terraform/environments/$env"
 
 [ -f "$env_dir/env.hcl" ] || { echo "No $env_dir/env.hcl. Run from the repo root." >&2; exit 1; }
 
-# Same values the pipeline uses. Fail early if any are missing.
 : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET}"
 : "${MIGDEMO_OWNER:?set MIGDEMO_OWNER}"
 : "${MIGDEMO_BUDGET_EMAIL:?set MIGDEMO_BUDGET_EMAIL}"
 : "${MIGDEMO_ALB_INGRESS_CIDRS:?set MIGDEMO_ALB_INGRESS_CIDRS}"
 
-# Read project and region from the same files Terragrunt uses, so there's
-# one place to change them. root.hcl has project, env.hcl has aws_region.
+# Read from the same files Terragrunt uses.
 hcl_value() {
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n 1
 }
@@ -30,9 +26,7 @@ echo "Project: $project  Environment: $env  Region: $region"
 echo "Signing in fresh so the session lasts the whole run..."
 aws login || exit 1
 
-# Guardrail: stop if nothing in AWS carries this project and environment's
-# tags. Usually means the wrong env, region, or account. The tag search can
-# list recently deleted resources for a while, so a hit isn't proof alone.
+# Stop if nothing is tagged for this env. Usually the wrong env, region, or account.
 found=$(aws resourcegroupstaggingapi get-resources --region "$region" \
   --tag-filters "Key=Project,Values=$project" "Key=Environment,Values=$env" \
   --query 'length(ResourceTagMappingList)' --output text)
@@ -45,7 +39,7 @@ echo "Found $found tagged resources."
 export MIGDEMO_MOCKS_ON_PLAN=false
 cd "$env_dir"
 
-# Git Bash needs a Windows path for terraform.exe; plain pwd elsewhere.
+# Git Bash needs a Windows path for terraform.exe.
 here=$(pwd -W 2>/dev/null || pwd)
 
 for unit in observability app data network; do

@@ -11,12 +11,12 @@ locals {
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
-  enable_dns_hostnames = true # needed for private DNS on interface endpoints
+  enable_dns_hostnames = true # needed for private DNS on endpoints
 
   tags = { Name = "${var.name_prefix}-vpc" }
 }
 
-# Empty the default SG so nothing ends up using it by accident.
+# Empty the default SG so nothing uses it by accident.
 resource "aws_default_security_group" "default" {
   vpc_id = aws_vpc.this.id
   tags   = { Name = "${var.name_prefix}-default-locked" }
@@ -27,7 +27,7 @@ resource "aws_internet_gateway" "this" {
   tags   = { Name = "${var.name_prefix}-igw" }
 }
 
-# Public subnets hold only the ALB. Nothing gets a public IP automatically.
+# ALB only. No auto public IPs.
 resource "aws_subnet" "public" {
   count = length(local.azs)
 
@@ -39,7 +39,7 @@ resource "aws_subnet" "public" {
   tags = { Name = "${var.name_prefix}-public-${local.azs[count.index]}", Tier = "public" }
 }
 
-# Private subnets hold Fargate tasks and Aurora. No route to the internet.
+# Tasks and Aurora. No route to the internet.
 resource "aws_subnet" "private" {
   count = length(local.azs)
 
@@ -68,7 +68,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# No default route on purpose: no NAT gateway. AWS APIs are reached through endpoints.
+# No NAT on purpose. AWS APIs go through endpoints.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
   tags   = { Name = "${var.name_prefix}-private" }
@@ -81,7 +81,7 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# ECR layers live in S3, so pulls need this. Gateway endpoints are free.
+# ECR layers live in S3. Gateway endpoints are free.
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.this.id
   service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
@@ -104,7 +104,7 @@ resource "aws_vpc_endpoint" "interface" {
   tags = { Name = "${var.name_prefix}-${each.value}" }
 }
 
-# VPC flow logs, rejected traffic only, to keep volume and cost low.
+# Rejected traffic only, to keep cost low.
 resource "aws_cloudwatch_log_group" "flow_logs" {
   name              = "/${var.name_prefix}/vpc-flow-logs"
   retention_in_days = var.flow_log_retention_days

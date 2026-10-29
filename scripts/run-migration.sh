@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Run a one-off DB task (Flyway, or the db-logins setup) once inside the VPC,
-# wait for it, print its logs and fail unless the container exited 0.
-#
-# Required env: CLUSTER, TASK_DEFINITION, SUBNETS (comma separated),
-#               SECURITY_GROUP, LOG_GROUP
-# Optional env: CONTAINER (default migrate), also the log stream prefix
+# Runs a one-off DB task in the VPC, prints its logs, fails unless it exits 0.
+# Needs CLUSTER, TASK_DEFINITION, SUBNETS, SECURITY_GROUP, LOG_GROUP. Optional CONTAINER.
 set -euo pipefail
 
 : "${CLUSTER:?}" "${TASK_DEFINITION:?}" "${SUBNETS:?}" "${SECURITY_GROUP:?}" "${LOG_GROUP:?}"
@@ -28,8 +24,7 @@ if [[ -z "$task_arn" ]]; then
 fi
 echo "Task: ${task_arn}"
 
-# Polls every 6s for up to 10 minutes. A paused Aurora cluster resumes in
-# well under a minute, and Flyway retries the connection meanwhile.
+# Up to 10 min. A paused Aurora resumes well within that.
 aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
 
 desc=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" --output json)

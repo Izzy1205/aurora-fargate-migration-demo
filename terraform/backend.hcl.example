@@ -1,11 +1,4 @@
-# Backend settings for terraform/bootstrap only. The Terragrunt units under
-# environments/ get their backend from root.hcl instead.
-#
-# Copy to backend.hcl (gitignored) and fill in, then from terraform/bootstrap:
-#   terraform init -backend-config=../backend.hcl
-#
-# The bucket is created once by hand, outside any stack, with versioning
-# and default encryption turned on and public access blocked.
+# Bootstrap only. Copy to backend.hcl, then: terraform init -backend-config=../backend.hcl
 bucket = "REPLACE-ME-tfstate-bucket"
 key    = "aurora-fargate-migration-demo/bootstrap.tfstate"
-region = "us-east-1" # wherever the bucket lives. Terragrunt reads TF_STATE_REGION for the same thing.
+region = "us-east-1" # wherever the bucket lives

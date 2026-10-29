@@ -1,12 +1,9 @@
 name: stale-stack
 
-# Daily check for a testing stack that was left running. Read only: it signs
-# in with the plan role and only runs describe calls. If testing has been up
-# for more than a day it posts a warning on the run. It never fails the job
-# and never changes anything.
+# Warns if testing has been up more than a day. Read only, never fails.
 on:
   schedule:
-    - cron: "0 13 * * *"  # 13:00 UTC, about 9 AM Eastern
+    - cron: "0 13 * * *"  # about 9 AM Eastern
   workflow_dispatch:
 
 permissions:
@@ -21,8 +18,7 @@ jobs:
     name: check testing stack age
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # The plan role trusts this environment's OIDC subject. Its branch rule
-    # allows main, which is where scheduled runs start.
+    # Plan role trusts this env's OIDC subject.
     environment: testing-infra-plan
     permissions:
       contents: read
@@ -41,8 +37,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-stale-${{ github.run_id }}
 
-      # VPCs and clusters have no create time, so age comes from the Aurora
-      # cluster and the ALB. The VPC is only checked to see if anything is up.
+      # VPCs have no create time, so age comes from Aurora and the ALB.
       - name: check age
         shell: bash
         run: |

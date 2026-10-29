@@ -1,5 +1,4 @@
-# What CI needs to run the migration and roll the service. deploy.yml reads
-# all of these from this one unit. Secret ARN only, never the value.
+# Secret ARN only, never the value.
 
 output "app_url" {
   description = "Open this in the browser during the demo."

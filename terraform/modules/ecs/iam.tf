@@ -1,8 +1,4 @@
-# The app, the migration and the db-logins task each get their own
-# execution role (pull image, write logs, inject secrets) and task role. Each
-# execution role can read only the DB secrets its own task needs: the app
-# gets the app login, Flyway gets the Flyway login, and only db-logins can
-# read the master secret.
+# Each task gets its own roles, and only db-logins can read the master secret.
 
 locals {
   task_kinds = {
@@ -48,7 +44,7 @@ data "aws_iam_policy_document" "execution" {
   statement {
     sid       = "EcrAuth"
     actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"] # this action does not support resource scoping
+    resources = ["*"] # this action doesn't support resource scoping
   }
 
   statement {
@@ -82,9 +78,7 @@ resource "aws_iam_role_policy" "execution" {
   policy = data.aws_iam_policy_document.execution[each.key].json
 }
 
-# No permissions here. They exist so the deploy role's PassRole can be
-# scoped to them. The app role gets its payment queue policy from
-# layers/app; the migrate and db-logins roles have none.
+# No permissions. They exist so PassRole can be scoped to them.
 resource "aws_iam_role" "task" {
   for_each = local.task_kinds
 

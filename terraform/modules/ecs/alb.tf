@@ -1,8 +1,5 @@
-# Demo ALB: HTTP only, locked to the CIDRs in alb_ingress_cidrs.
-# Production: HTTPS listener with an ACM cert, HTTP redirect, access logs.
+# HTTP only, locked to alb_ingress_cidrs. Production would be HTTPS.
 resource "aws_lb" "this" {
-  # The WAF is attached in modules/waf, called from layers/app. checkov's
-  # graph doesn't follow the association across the module boundary.
   #checkov:skip=CKV2_AWS_28:web ACL associated by modules/waf in the same unit
   name                       = "${var.name_prefix}-alb"
   load_balancer_type         = "application"
@@ -19,10 +16,9 @@ resource "aws_lb_target_group" "app" {
   port                 = var.app_port
   protocol             = "HTTP"
   target_type          = "ip"
-  deregistration_delay = 10 # short drain so demo deploys finish quickly
+  deregistration_delay = 10 # short drain so deploys finish fast
 
-  # /health does not touch the database, so ALB checks never wake a paused
-  # Aurora cluster.
+  # /health skips the DB so checks never wake a paused Aurora.
   health_check {
     path                = "/health"
     matcher             = "200"

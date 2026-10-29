@@ -1,25 +1,13 @@
-# Regional WAF in front of the ALB. Default allow, then AWS managed rule
-# groups and a per-IP rate limit decide what gets blocked.
-#
-# ALB health checks to /health go straight from the ALB nodes to the
-# targets. They never pass through the web ACL, so no rule here can mark a
-# task unhealthy.
-#
-# count_only flips every rule to count: requests are logged and show up in
-# the CountedRequests metric, nothing is blocked. Use it for a first rollout,
-# read the logs for false positives, then switch it off.
+# Default allow. Managed rules and a per-IP rate limit do the blocking.
+# count_only logs instead of blocking, for a first rollout.
 
 locals {
-  # count_only swaps block for count. Managed rule groups take it through
-  # override_action, our own rate rule through action.
   managed_override = var.count_only ? "count" : "none"
   rate_action      = var.count_only ? "count" : "block"
 }
 
 resource "aws_wafv2_web_acl" "this" {
-  # Log4j is blocked by KnownBadInputs whenever count_only is false (the
-  # testing default). checkov can't resolve the variable, and count-only
-  # first rollouts are on purpose.
+  # checkov can't resolve count_only. KnownBadInputs blocks Log4j when it's false.
   #checkov:skip=CKV_AWS_192:blocks when count_only = false; count is a deliberate first-rollout mode
   name        = "${var.name_prefix}-alb"
   description = "${var.name_prefix} ALB: managed rules and a per-IP rate limit"
@@ -29,8 +17,7 @@ resource "aws_wafv2_web_acl" "this" {
     allow {}
   }
 
-  # Lower priority runs first. The cheap IP checks go before the bigger rule
-  # sets.
+  # Lower priority runs first, so cheap IP checks go before the big rule sets.
   rule {
     name     = "AWSManagedRulesAmazonIpReputationList"
     priority = 10
@@ -119,7 +106,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # Includes the Log4j (CVE-2021-44228) rules.
+  # Includes the Log4j rules.
   rule {
     name     = "AWSManagedRulesKnownBadInputsRuleSet"
     priority = 40
@@ -149,7 +136,6 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # The app sits on Postgres.
   rule {
     name     = "AWSManagedRulesSQLiRuleSet"
     priority = 50

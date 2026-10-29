@@ -1,11 +1,4 @@
--- Flyway callback, runs after every migrate. Not a versioned migration, so
--- it never shows up in the history table.
---
--- The default privileges set by db/logins give the app row access to every
--- new table, and on a fresh stack that includes Flyway's own history table.
--- Take it back. app_user matches the default app_username in
--- modules/database. Does nothing where that role doesn't exist, such as a
--- plain local Postgres.
+-- Callback, not checksummed. Takes app_user's access to Flyway's history table back.
 DO $$
 BEGIN
   IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user')
@@ -14,14 +7,7 @@ BEGIN
   END IF;
 END $$;
 
--- Payments and audit events are append-only by design. The app inserts
--- them and never edits or removes one; a correction or reversal is a new
--- payment row. The default privileges give app_user UPDATE and DELETE on
--- every table Flyway creates, so take them back here. db-logins.sql does
--- the same revoke right after its broad grant, because it runs before
--- Flyway on every deploy and used to leave a window where the app had
--- them. This copy is the backstop, and it covers the first deploy, when
--- these tables don't exist until Flyway makes them.
+-- Append-only backstop for tables Flyway just created. db-logins.sql does the same.
 DO $$
 DECLARE
   t text;

@@ -1,18 +1,10 @@
-# Permissions boundary for every role the main stack creates. A role's
-# effective permissions are its own policies AND this boundary, so even if the
-# terraform role puts AdministratorAccess on a new role, the role still can't
-# do more than what's listed here. Anything not listed is out of reach,
-# including all of IAM.
-#
-# This covers what the ECS execution roles, the flow logs role and the app
-# task role (payment queue) actually use. The migrate task role has no
-# policies. If the main stack ever needs a role that does more, the boundary
-# has to grow here first, by hand, and bootstrap has to be applied again.
+# Caps every role the main stack creates. Anything not here, including IAM, is out of reach.
+# Growing it needs a bootstrap re-apply.
 data "aws_iam_policy_document" "workload_boundary" {
   statement {
     sid       = "EcrAuth"
     actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"] # this action does not support resource scoping
+    resources = ["*"] # this action doesn't support resource scoping
   }
 
   statement {
@@ -34,8 +26,7 @@ data "aws_iam_policy_document" "workload_boundary" {
     ]
   }
 
-  # The execution roles inject the DB credentials at task start. Each role's
-  # own policy narrows this to the one secret its task needs.
+  # Each role's own policy narrows this to one secret.
   statement {
     sid     = "ReadDbSecrets"
     actions = ["secretsmanager:GetSecretValue"]
@@ -56,10 +47,7 @@ data "aws_iam_policy_document" "workload_boundary" {
     }
   }
 
-  # The app task sends and consumes payment requests. Project queues only.
-  # ChangeMessageVisibility is allowed here so the app team can extend a
-  # message's timeout later without another bootstrap change; the task role
-  # itself doesn't grant it yet.
+  # ChangeMessageVisibility is here so the app team won't need a bootstrap change later.
   statement {
     sid = "UseProjectQueues"
     actions = [
@@ -72,8 +60,7 @@ data "aws_iam_policy_document" "workload_boundary" {
     resources = ["arn:${local.part}:sqs:${local.region}:${local.account}:${local.p}-*"]
   }
 
-  # The queues are encrypted with a project key. The key ARN doesn't exist
-  # yet when bootstrap runs, so this is limited to calls SQS makes instead.
+  # Key ARN doesn't exist yet at bootstrap time, so scope by the SQS caller instead.
   statement {
     sid       = "UseQueueKeyViaSqs"
     actions   = ["kms:GenerateDataKey", "kms:Decrypt"]

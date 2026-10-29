@@ -13,8 +13,6 @@ variable "environment" {
   type        = string
 }
 
-# Only read by the provider.tf that Terragrunt generates, which tflint does
-# not see when it lints this folder on its own.
 # tflint-ignore: terraform_unused_declarations
 variable "owner" {
   description = "Owner tag value. Terragrunt sets it from MIGDEMO_OWNER."
@@ -71,8 +69,7 @@ variable "aurora_cluster_identifier" {
   type        = string
 }
 
-# Keys left out keep the module defaults (modules/observability/variables.tf).
-# Terraform drops unknown keys without a word, so the validation catches typos.
+# Unknown keys get silently dropped, so validation catches typos.
 variable "alarm_thresholds" {
   description = "Alarm threshold overrides, set per environment in env.hcl."
   type        = map(number)

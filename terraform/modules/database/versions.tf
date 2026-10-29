@@ -1,4 +1,4 @@
-# 1.11 is the first release with write-only arguments (secret_string_wo).
+# 1.11+ for write-only args.
 terraform {
   required_version = ">= 1.11"
   required_providers {

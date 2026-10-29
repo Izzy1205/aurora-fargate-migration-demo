@@ -1,9 +1,4 @@
-# Both queues are encrypted with this customer managed key. A CMK, not the
-# AWS managed alias/aws/sqs key, so access is spelled out in IAM and the key
-# can be shared with a producer in another role later.
-#
-# Cost: $1 a month prorated by the hour. SQS caches the data key
-# (kms_data_key_reuse_period_seconds), so KMS request charges stay tiny.
+# CMK so access is spelled out in IAM. SQS caches the data key, so KMS costs stay tiny.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -22,14 +17,12 @@ resource "aws_kms_alias" "queue" {
 }
 
 data "aws_iam_policy_document" "queue_key" {
-  # Same reasoning as the alarm key in modules/observability: in a key
-  # policy "*" is this key only.
+  # Key policy: "*" is this key only.
   #checkov:skip=CKV_AWS_109:Key policy, "*" is this key only
   #checkov:skip=CKV_AWS_111:Key policy, "*" is this key only
   #checkov:skip=CKV_AWS_356:Key policy, "*" is this key only
 
-  # Access goes through IAM. The task role gets its KMS actions from the
-  # policy in layers/app, limited to calls made by SQS.
+  # Task role gets KMS only through SQS (layers/app).
   statement {
     sid       = "AccountAccessThroughIam"
     actions   = ["kms:*"]

@@ -1,7 +1,5 @@
 name: codeql
 
-# Scans the app and the workflow files (e.g. untrusted input reaching a
-# shell). The weekly run is so new queries get a shot at old code.
 on:
   pull_request:
     branches: [main]
@@ -23,8 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read          # read workflow run details for the upload
-      security-events: write # upload results to the Security tab
+      actions: read          # for the SARIF upload
+      security-events: write # Security tab upload
     strategy:
       fail-fast: false
       matrix:

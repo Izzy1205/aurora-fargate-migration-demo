@@ -1,22 +1,10 @@
 name: deploy
 
-
-# Deploys one environment, one unit at a time:
-# network, data, app, then observability.
-# Each unit is planned, then the exact saved plan is applied.
-# A merge to main starts a testing deploy on its own, but each apply still
-# waits for a reviewer: the testing-infra environment for every unit and
-# testing-app for the release job. Reviewer rules live in the GitHub
-# environment settings. Production isn't wired up yet. When it is, it will
-# be started by hand and wait for reviewers too.
-# Any plan that deletes or replaces a resource fails (see tg-plan.yml).
-# Teardowns are done by hand with scripts/teardown.sh.
-# The release job pushes the scanned images, sets up the DB logins, runs
-# Flyway as its own login, and rolls the service.
+# Plans and applies one unit at a time: network, data, app, observability.
+# Every apply waits for a reviewer. Plans that delete or replace fail.
 on:
   push:
     branches: [main]
-    # Docs and the local teardown script don't change what's deployed.
     paths-ignore:
       - README.md
       - docs/**
@@ -42,8 +30,7 @@ env:
   TF_INPUT: "false"
 
 jobs:
-  # No credentials or OIDC token here, so a compromised scanner can't reach
-  # AWS. A fixable CRITICAL fails the job and release never runs.
+  # No AWS creds here, so a compromised scanner can't reach AWS.
   scan:
     name: build and scan images
     runs-on: ubuntu-latest
@@ -59,7 +46,6 @@ jobs:
           docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-app:$TAG" app
           docker build --build-arg APP_VERSION="${TAG::7}" -t "demo-migrate:$TAG" db
 
-      # SHA pin, see pr.yml for why.
       - name: scan app image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -111,7 +97,6 @@ jobs:
       plan_key: ${{ needs.network-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.network-plan.outputs.plan_sha256 }}
 
-  # Runs after network is applied, or when network had nothing to apply.
   data-plan:
     needs: [network-plan, network-apply, scan]
     if: >-
@@ -208,9 +193,7 @@ jobs:
       plan_key: ${{ needs.observability-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.observability-plan.outputs.plan_sha256 }}
 
-  # The release job needs these names and IDs. Read with the read-only plan
-  # role after the last apply. The app unit passes through the network values
-  # release needs, so this is the only unit read here.
+  # Read with the plan role after the last apply.
   outputs:
     name: read app outputs
     needs: [app-plan, app-apply, scan]
@@ -264,7 +247,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-outputs-${{ github.run_id }}
-          mask-aws-account-id: false  # outputs below are passed between jobs
+          mask-aws-account-id: false
 
       - name: export outputs
         id: out
@@ -303,7 +286,7 @@ jobs:
       CLUSTER: ${{ needs.outputs.outputs.cluster }}
       SERVICE: ${{ needs.outputs.outputs.service }}
       TAG: ${{ github.sha }}
-      APP_DESIRED_COUNT: ${{ needs.outputs.outputs.desired_count }}  # app_desired_count in env.hcl
+      APP_DESIRED_COUNT: ${{ needs.outputs.outputs.desired_count }}  # from env.hcl
     steps:
       - uses: actions/checkout@v7
 
@@ -317,7 +300,7 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Not rebuilt, so what ships is exactly what was scanned.
+      # Not rebuilt, so we ship exactly what was scanned.
       - uses: actions/download-artifact@v8
         with:
           name: images
@@ -331,7 +314,7 @@ jobs:
           docker load -i images.tar
           push_once() {
             local repo=$1 local_image=$2
-            # Tags are immutable, so a re-run of the same commit reuses the image.
+            # Tags are immutable, so a re-run reuses the image.
             if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
               echo "$repo:$TAG already exists, skipping push"
               return
@@ -342,9 +325,7 @@ jobs:
           push_once "$APP_REPO" demo-app
           push_once "$MIGRATION_REPO" demo-migrate
 
-      # Creates the app and Flyway logins, or resets their passwords to what
-      # is in their secrets, and hands the tables to the Flyway login. Safe
-      # to re-run. This is the only task that reads the master secret.
+      # Only task that reads the master secret. Safe to re-run.
       - name: set up DB logins in the private subnets
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -359,7 +340,7 @@ jobs:
           export TASK_DEFINITION
           bash scripts/run-migration.sh
 
-      # Schema first. Expand-only, so the old code is fine with it.
+      # Expand-only, so old code still works.
       - name: run Flyway migration task in the private subnets
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -373,7 +354,6 @@ jobs:
           export TASK_DEFINITION
           bash scripts/run-migration.sh
 
-      # Only reached if the migration exited 0.
       - name: deploy app
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}

@@ -21,8 +21,7 @@ terraform.rc
 # Terragrunt
 .terragrunt-cache/
 .terragrunt-stack/
-# Lock files from a local `terraform init -backend=false` in a layer or
-# module. The committed ones live in each unit folder under environments/.
+# Local init lock files. The real ones live under environments/.
 terraform/layers/*/.terraform.lock.hcl
 terraform/modules/*/.terraform.lock.hcl
 

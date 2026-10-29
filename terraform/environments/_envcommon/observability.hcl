@@ -1,10 +1,6 @@
-# Observability unit (alarms, SNS topic, dashboard), shared by every
-# environment. Reads names and IDs from app and data, changes nothing in them.
-
 locals {
   env = read_terragrunt_config(find_in_parent_folders("env.hcl")).locals
 
-  # See data.hcl for why this switch exists.
   mock_commands = get_env("MIGDEMO_MOCKS_ON_PLAN", "true") == "true" ? ["init", "validate", "plan"] : ["init", "validate"]
 }
 
@@ -27,9 +23,7 @@ dependency "app" {
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
 
-  # The ARN suffix outputs are new. If app was applied before they existed,
-  # a PR plan fills them from the mocks above instead of failing. Only for
-  # the commands that allow mocks, so deploy.yml still sees real values.
+  # Fills new outputs from mocks until app is re-applied.
   mock_outputs_merge_strategy_with_state = "shallow"
 }
 
@@ -56,6 +50,5 @@ inputs = {
 
   alarm_thresholds = local.env.alarm_thresholds
 
-  # Same inbox as the budget alerts.
   alert_email = get_env("MIGDEMO_BUDGET_EMAIL")
 }
