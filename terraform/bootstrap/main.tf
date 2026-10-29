@@ -1,6 +1,4 @@
-# The CI identities and the permissions boundary for the main stack's roles.
-# Applied by hand with admin credentials, never from the pipeline, so the
-# pipeline's terraform role can't widen its own permissions.
+# Applied by hand with admin creds, never from CI, so CI can't widen its own permissions.
 
 provider "aws" {
   region = var.aws_region
@@ -48,4 +46,9 @@ output "workload_boundary_arn" {
 output "deploy_role_arn" {
   description = "GitHub variable AWS_DEPLOY_ROLE_ARN."
   value       = module.github_oidc.deploy_role_arn
+}
+
+output "backup_role_arn" {
+  description = "Role AWS Backup runs as for the Aurora backups. The data layer finds it by name, nothing to copy anywhere."
+  value       = module.github_oidc.backup_role_arn
 }

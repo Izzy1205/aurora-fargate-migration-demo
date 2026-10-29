@@ -1,5 +1,4 @@
-# Read by the app unit through a Terragrunt dependency block. Secret ARNs
-# only, never the values.
+# Secret ARNs only, never the values.
 
 output "endpoint" {
   description = "Writer endpoint."
@@ -49,4 +48,14 @@ output "migrator_username" {
 output "aurora_cluster_identifier" {
   description = "Aurora cluster identifier."
   value       = module.database.cluster_identifier
+}
+
+output "backup_vault_name" {
+  description = "AWS Backup vault in the home region."
+  value       = module.backup.vault_name
+}
+
+output "dr_backup_vault_arn" {
+  description = "AWS Backup vault in the DR region that holds the copies."
+  value       = module.backup.dr_vault_arn
 }

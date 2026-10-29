@@ -3,13 +3,17 @@ output "cluster_identifier" {
   value       = aws_rds_cluster.this.cluster_identifier
 }
 
+output "cluster_arn" {
+  description = "Cluster ARN. The backup plan selects the cluster by it."
+  value       = aws_rds_cluster.this.arn
+}
+
 output "endpoint" {
   description = "Writer endpoint."
   value       = aws_rds_cluster.this.endpoint
 }
 
-# Spreads connections across the readers. With no readers it points at the
-# writer, so it's always safe to use for reads.
+# Points at the writer when there are no readers.
 output "reader_endpoint" {
   description = "Reader endpoint."
   value       = aws_rds_cluster.this.reader_endpoint

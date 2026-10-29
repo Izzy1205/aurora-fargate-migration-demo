@@ -1,7 +1,4 @@
-# checkov config for CI and local runs:  checkov --config-file .checkov.yaml
-#
-# These skips are demo trade-offs. The stack lives a few hours and only holds
-# fake data. The README's production section has the real fix for each.
+# Demo trade-offs. Stack lives a few hours with fake data.
 directory:
   - terraform
 framework:
@@ -9,31 +6,27 @@ framework:
 compact: true
 quiet: true
 skip-check:
-  # No domain or ACM cert for a throwaway demo. ALB is HTTP, locked to one /32.
+  # No domain or cert for a throwaway demo. ALB is locked to one /32.
   - CKV_AWS_2      # ALB listener HTTPS
   - CKV_AWS_103    # TLS 1.2 on listener
   - CKV2_AWS_20    # HTTP to HTTPS redirect
-  - CKV_AWS_378    # target group HTTP (TLS ends at the ALB in production too)
-  - CKV_AWS_91     # ALB access logs (needs a log bucket that outlives teardown)
-  # Built and destroyed the same day, so protection would only block teardown.
+  - CKV_AWS_378    # target group HTTP
+  - CKV_AWS_91     # ALB access logs
+  # Torn down same day, protection would only block teardown.
   - CKV_AWS_139    # RDS deletion protection
   - CKV_AWS_150    # ALB deletion protection
-  - CKV2_AWS_8     # AWS Backup plan for RDS
-  # Encrypted with AWS managed keys. A customer managed KMS key adds a 7 day
-  # minimum deletion wait, which fights "build, demo, destroy".
+  # CMKs have a 7 day deletion wait, which fights build/demo/destroy.
   - CKV_AWS_327    # RDS with KMS CMK
   - CKV_AWS_136    # ECR with KMS CMK
   - CKV_AWS_158    # CloudWatch log groups with KMS CMK
-  # Short retention on purpose: cost and a clean teardown.
   - CKV_AWS_338    # log retention of 1 year
-  # Paid monitoring features, not needed for a 30 minute demo.
+  # Paid monitoring, not needed for a demo.
   - CKV_AWS_353    # RDS Performance Insights
   - CKV_AWS_118    # RDS enhanced monitoring
   - CKV_AWS_65     # ECS Container Insights
-  - CKV2_AWS_27    # Postgres statement logging (would also log query data)
-  # Flyway (JVM) needs a writable filesystem; the app container is read-only.
+  - CKV2_AWS_27    # Postgres statement logging
+  # Flyway (JVM) needs a writable filesystem.
   - CKV_AWS_336
-  # False positive: these security groups are attached in other modules.
+  # False positive: these SGs are attached in other modules.
   - CKV2_AWS_5
-  # The module takes the first two AZs that are available; fine for a demo.
   - CKV_AWS_394
