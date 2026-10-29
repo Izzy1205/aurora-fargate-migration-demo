@@ -26,6 +26,26 @@ RUN apk upgrade --no-cache \
  && ls /flyway/drivers/postgresql-*.jar \
  && psql --version
 
+# Guava swap (CVE-2026-102554, High, denial of service).
+# Flyway 13.11.1 is the newest release and still bundles Guava 33.5.0, which
+# our Trivy gate blocks. The fix is in Guava 33.7.2, so we replace the jar
+# ourselves: delete the bundled copy, download 33.7.2 from Maven Central, and
+# check its SHA-256 before using it. Guava keeps its API stable across minor
+# versions, and the "flyway against throwaway Postgres" PR check proves
+# Flyway still runs with it.
+# Remove this block once a Flyway release ships Guava 33.7.2 or newer.
+ARG GUAVA_VERSION=33.7.2-jre
+ARG GUAVA_SHA256=b530942257fb935f8b2cfaa5f8eb5bd59c555fd8e8d01b8ce98912e077ea606c
+RUN set -eu \
+ && old="$(find /flyway -name 'guava-*.jar')" \
+ && test -n "$old" \
+ && dir="$(dirname "$(echo "$old" | head -n 1)")" \
+ && rm -f $old \
+ && wget -q -O "$dir/guava-${GUAVA_VERSION}.jar" \
+      "https://repo1.maven.org/maven2/com/google/guava/guava/${GUAVA_VERSION}/guava-${GUAVA_VERSION}.jar" \
+ && echo "${GUAVA_SHA256}  $dir/guava-${GUAVA_VERSION}.jar" | sha256sum -c - \
+ && find /flyway -name 'guava-*.jar'
+
 RUN addgroup -S migrate && adduser -S -G migrate -h /home/migrate migrate
 
 # Owned by root so the runtime user can read but not change them.
