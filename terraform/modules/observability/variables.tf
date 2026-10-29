@@ -71,7 +71,8 @@ variable "thresholds" {
     aurora_acu_percent           = optional(number, 90)        # of max ACU
     aurora_freeable_memory_bytes = optional(number, 268435456) # 256 MiB
     aurora_connections           = optional(number, 100)
-    waf_blocked_requests         = optional(number, 100) # blocked in 5 minutes
+    aurora_replica_lag_ms        = optional(number, 1000) # worst reader, milliseconds
+    waf_blocked_requests         = optional(number, 100)  # blocked in 5 minutes
     queue_oldest_message_seconds = optional(number, 300)
   })
   default = {}
