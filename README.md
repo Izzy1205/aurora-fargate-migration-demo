@@ -11,6 +11,9 @@ to patch, upgrade, and prove secure.
 2) What this repo does
 - Runs the app in containers on ECS Fargate behind a load balancer
 - Puts a WAF in front to block common attacks and rate limit by IP
+- Serves plain HTTP, locked to one IP. HTTPS needs a domain for an ACM
+  cert, and the demo doesn't have one. In prod it's a 443 listener with
+  80 redirecting to it.
 - Stores data in Aurora PostgreSQL. The app and Flyway each log in as
   their own role with a password in Secrets Manager. The app can only
   read and write rows; Flyway owns the schema. The master password stays
