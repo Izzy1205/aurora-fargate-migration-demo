@@ -34,11 +34,15 @@ data "aws_iam_policy_document" "workload_boundary" {
     ]
   }
 
-  # The execution roles inject the DB credentials at task start.
+  # The execution roles inject the DB credentials at task start. Each role's
+  # own policy narrows this to the one secret its task needs.
   statement {
-    sid       = "ReadRdsManagedSecret"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:${local.part}:secretsmanager:${local.region}:${local.account}:secret:rds!*"]
+    sid     = "ReadDbSecrets"
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = [
+      "arn:${local.part}:secretsmanager:${local.region}:${local.account}:secret:rds!*",
+      "arn:${local.part}:secretsmanager:${local.region}:${local.account}:secret:${local.p}/db/*",
+    ]
   }
 
   statement {

@@ -238,9 +238,9 @@ data "aws_iam_policy_document" "deploy" {
   }
 
   statement {
-    sid       = "RunMigrationTaskOnly"
+    sid       = "RunMigrationTasksOnly"
     actions   = ["ecs:RunTask"]
-    resources = [local.migration_taskdef]
+    resources = local.runnable_taskdefs
     condition {
       test     = "ArnEquals"
       variable = "ecs:cluster"

@@ -26,6 +26,11 @@ output "migration_task_family" {
   value       = module.ecs.migration_task_family
 }
 
+output "db_logins_task_family" {
+  description = "Task definition family that creates the DB logins. CI runs it before Flyway."
+  value       = module.ecs.db_logins_task_family
+}
+
 output "private_subnet_ids_csv" {
   description = "Private subnets, comma separated, for run-task awsvpc config."
   value       = join(",", var.private_subnet_ids)

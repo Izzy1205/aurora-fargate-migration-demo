@@ -68,8 +68,28 @@ variable "db_name" {
   type        = string
 }
 
-variable "db_secret_arn" {
-  description = "ARN of the RDS-managed secret with username and password keys."
+variable "master_secret_arn" {
+  description = "ARN of the RDS-managed master secret. Only the db-logins task reads it."
+  type        = string
+}
+
+variable "app_secret_arn" {
+  description = "ARN of the app login secret, JSON with username and password keys."
+  type        = string
+}
+
+variable "migrator_secret_arn" {
+  description = "ARN of the Flyway login secret, JSON with username and password keys."
+  type        = string
+}
+
+variable "app_username" {
+  description = "Postgres role the app logs in as. db-logins creates it."
+  type        = string
+}
+
+variable "migrator_username" {
+  description = "Postgres role Flyway logs in as. db-logins creates it."
   type        = string
 }
 

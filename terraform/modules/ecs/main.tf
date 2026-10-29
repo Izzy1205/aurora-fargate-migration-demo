@@ -41,11 +41,12 @@ resource "aws_ecs_task_definition" "app" {
       { name = "DB_SSLMODE", value = "require" },
       { name = "PORT", value = tostring(var.app_port) },
     ], var.app_environment)
-    # Injected by the ECS agent at task start from the RDS-managed secret.
-    # The values never pass through Terraform, GitHub or the image.
+    # Injected by the ECS agent at task start from the app login secret,
+    # which only gets row access. The values never pass through Terraform,
+    # GitHub or the image.
     secrets = [
-      { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
-      { name = "DB_PASSWORD", valueFrom = "${var.db_secret_arn}:password::" },
+      { name = "DB_USER", valueFrom = "${var.app_secret_arn}:username::" },
+      { name = "DB_PASSWORD", valueFrom = "${var.app_secret_arn}:password::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -84,9 +85,10 @@ resource "aws_ecs_task_definition" "migration" {
       { name = "FLYWAY_CLEAN_DISABLED", value = "true" },
       { name = "FLYWAY_VALIDATE_MIGRATION_NAMING", value = "true" },
     ]
+    # The Flyway login owns the schema. It is not the master user.
     secrets = [
-      { name = "FLYWAY_USER", valueFrom = "${var.db_secret_arn}:username::" },
-      { name = "FLYWAY_PASSWORD", valueFrom = "${var.db_secret_arn}:password::" },
+      { name = "FLYWAY_USER", valueFrom = "${var.migrator_secret_arn}:username::" },
+      { name = "FLYWAY_PASSWORD", valueFrom = "${var.migrator_secret_arn}:password::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -94,6 +96,56 @@ resource "aws_ecs_task_definition" "migration" {
         awslogs-group         = aws_cloudwatch_log_group.migration.name
         awslogs-region        = data.aws_region.current.region
         awslogs-stream-prefix = "migrate"
+      }
+    }
+  }])
+}
+
+# One-off task that creates the app and Flyway logins and sets their
+# passwords. It is the only thing that reads the master secret, and CI runs
+# it before Flyway on every deploy. It is safe to re-run: it only creates
+# what is missing and re-applies the same grants. Same image as Flyway, with
+# a different entrypoint (db/logins/db-logins.sh).
+resource "aws_ecs_task_definition" "db_logins" {
+  family                   = "${var.name_prefix}-db-logins"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.execution["db-logins"].arn
+  task_role_arn            = aws_iam_role.task["db-logins"].arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name                   = "db-logins"
+    image                  = var.migration_image
+    essential              = true
+    readonlyRootFilesystem = true
+    entryPoint             = ["/flyway/logins/db-logins.sh"]
+    environment = [
+      { name = "PGHOST", value = var.db_host },
+      { name = "PGPORT", value = tostring(var.db_port) },
+      { name = "PGDATABASE", value = var.db_name },
+      { name = "PGSSLMODE", value = "require" },
+      { name = "APP_DB_USER", value = var.app_username },
+      { name = "MIGRATOR_DB_USER", value = var.migrator_username },
+    ]
+    secrets = [
+      { name = "PGUSER", valueFrom = "${var.master_secret_arn}:username::" },
+      { name = "PGPASSWORD", valueFrom = "${var.master_secret_arn}:password::" },
+      { name = "APP_DB_PASSWORD", valueFrom = "${var.app_secret_arn}:password::" },
+      { name = "MIGRATOR_DB_PASSWORD", valueFrom = "${var.migrator_secret_arn}:password::" },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.migration.name
+        awslogs-region        = data.aws_region.current.region
+        awslogs-stream-prefix = "db-logins"
       }
     }
   }])

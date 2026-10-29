@@ -19,6 +19,26 @@ output "db_name" {
 }
 
 output "master_user_secret_arn" {
-  description = "ARN of the RDS-managed secret holding the master username and password."
+  description = "ARN of the RDS-managed master secret. Break-glass, and read only by the db-logins task."
   value       = aws_rds_cluster.this.master_user_secret[0].secret_arn
+}
+
+output "app_secret_arn" {
+  description = "ARN of the app login secret (username and password JSON)."
+  value       = aws_secretsmanager_secret.db_login["app"].arn
+}
+
+output "migrator_secret_arn" {
+  description = "ARN of the Flyway login secret (username and password JSON)."
+  value       = aws_secretsmanager_secret.db_login["migrator"].arn
+}
+
+output "app_username" {
+  description = "Postgres role the app logs in as."
+  value       = var.app_username
+}
+
+output "migrator_username" {
+  description = "Postgres role Flyway logs in as."
+  value       = var.migrator_username
 }

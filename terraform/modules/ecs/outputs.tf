@@ -28,6 +28,11 @@ output "migration_task_family" {
   value       = aws_ecs_task_definition.migration.family
 }
 
+output "db_logins_task_family" {
+  description = "Task definition family that creates the DB logins."
+  value       = aws_ecs_task_definition.db_logins.family
+}
+
 output "passable_role_arns" {
   description = "Execution and task role ARNs the deploy role may pass to ECS."
   value = concat(

@@ -37,10 +37,14 @@ module "ecs" {
   app_repository_arn       = module.registry.repository_arns["app"]
   migration_repository_arn = module.registry.repository_arns["migrate"]
 
-  db_host       = var.db_host
-  db_port       = var.db_port
-  db_name       = var.db_name
-  db_secret_arn = var.db_secret_arn
+  db_host             = var.db_host
+  db_port             = var.db_port
+  db_name             = var.db_name
+  master_secret_arn   = var.master_secret_arn
+  app_secret_arn      = var.app_secret_arn
+  migrator_secret_arn = var.migrator_secret_arn
+  app_username        = var.app_username
+  migrator_username   = var.migrator_username
 
   app_environment = [
     { name = "PAYMENT_QUEUE_URL", value = module.queue.queue_url },

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Run the Flyway task once inside the VPC, wait for it, print its logs and
-# fail unless the container exited 0.
+# Run a one-off DB task (Flyway, or the db-logins setup) once inside the VPC,
+# wait for it, print its logs and fail unless the container exited 0.
 #
 # Required env: CLUSTER, TASK_DEFINITION, SUBNETS (comma separated),
 #               SECURITY_GROUP, LOG_GROUP
+# Optional env: CONTAINER (default migrate), also the log stream prefix
 set -euo pipefail
 
 : "${CLUSTER:?}" "${TASK_DEFINITION:?}" "${SUBNETS:?}" "${SECURITY_GROUP:?}" "${LOG_GROUP:?}"
-container=migrate
+container=${CONTAINER:-migrate}
 
-echo "Starting migration task from ${TASK_DEFINITION}"
+echo "Starting ${container} task from ${TASK_DEFINITION}"
 run_out=$(aws ecs run-task \
   --cluster "$CLUSTER" \
   --task-definition "$TASK_DEFINITION" \
@@ -36,16 +37,16 @@ exit_code=$(jq -r --arg c "$container" '.tasks[0].containers[] | select(.name ==
 stop_reason=$(jq -r '.tasks[0].stoppedReason // ""' <<<"$desc")
 
 task_id=${task_arn##*/}
-echo "----- Flyway output -----"
+echo "----- ${container} output -----"
 aws logs get-log-events \
   --log-group-name "$LOG_GROUP" \
-  --log-stream-name "migrate/${container}/${task_id}" \
+  --log-stream-name "${container}/${container}/${task_id}" \
   --start-from-head \
   --query 'events[].message' --output text | tr '\t' '\n' || echo "(no logs found)"
 echo "-------------------------"
 
 if [[ "$exit_code" != "0" ]]; then
-  echo "Migration failed: exit code ${exit_code}. ${stop_reason}" >&2
+  echo "${container} task failed: exit code ${exit_code}. ${stop_reason}" >&2
   exit 1
 fi
-echo "Migration succeeded."
+echo "${container} task succeeded."
