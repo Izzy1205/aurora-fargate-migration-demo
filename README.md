@@ -19,6 +19,12 @@ to patch, upgrade, and prove secure.
   writer fails, Aurora promotes the reader, usually in under 60 seconds.
   With no reader it has to rebuild the writer, usually in under 10
   minutes. One line in env.hcl (`aurora_instance_count`) sets how many.
+- Holds a paid family and medical leave data model in the schema (V6 to
+  V9): claimants, employers, wages, claims, leave, benefit weeks,
+  payments, documents, and an audit trail. SSNs are only a token plus a
+  keyed hash, and the database refuses a second payment for the same
+  claim and week. Payments and audit rows are add-only for the app login.
+  The tokenization service that fills in those tokens is next.
 - Sends payment requests through an SQS queue with a dead letter queue
 - Watches it all with 15 CloudWatch alarms and a dashboard
 

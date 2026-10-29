@@ -68,6 +68,19 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator_user" IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator_user" IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO :"app_user";
 
+-- Payments and audit events are append-only by design. The app inserts
+-- them and never edits or removes one; a correction or reversal is a new
+-- payment row. The broad grant above would hand UPDATE and DELETE back on
+-- every deploy, and since this runs before Flyway, the app had them until
+-- Flyway's afterMigrate took them away again. Take them back here, in the
+-- same run, so there's no window. Tables that don't exist yet (a fresh
+-- database, or one still at V2) are skipped; when Flyway creates them,
+-- afterMigrate.sql does the same revoke as the backstop.
+SELECT format('REVOKE UPDATE, DELETE, TRUNCATE ON %I.%I FROM %I', 'public', t, :'app_user')
+FROM unnest(ARRAY['payment', 'payment_event', 'audit_event']) AS t
+WHERE to_regclass(format('%I.%I', 'public', t)) IS NOT NULL
+ORDER BY t \gexec
+
 -- The app has no business with Flyway's history table.
 SELECT format('REVOKE ALL ON public.flyway_schema_history FROM %I', :'app_user')
 WHERE to_regclass('public.flyway_schema_history') IS NOT NULL \gexec

@@ -13,3 +13,25 @@ BEGIN
     REVOKE ALL ON public.flyway_schema_history FROM app_user;
   END IF;
 END $$;
+
+-- Payments and audit events are append-only by design. The app inserts
+-- them and never edits or removes one; a correction or reversal is a new
+-- payment row. The default privileges give app_user UPDATE and DELETE on
+-- every table Flyway creates, so take them back here. db-logins.sql does
+-- the same revoke right after its broad grant, because it runs before
+-- Flyway on every deploy and used to leave a window where the app had
+-- them. This copy is the backstop, and it covers the first deploy, when
+-- these tables don't exist until Flyway makes them.
+DO $$
+DECLARE
+  t text;
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
+    RETURN;
+  END IF;
+  FOREACH t IN ARRAY ARRAY['payment', 'payment_event', 'audit_event'] LOOP
+    IF to_regclass('public.' || t) IS NOT NULL THEN
+      EXECUTE format('REVOKE UPDATE, DELETE, TRUNCATE ON public.%I FROM app_user', t);
+    END IF;
+  END LOOP;
+END $$;
