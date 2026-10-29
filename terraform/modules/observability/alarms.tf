@@ -13,7 +13,7 @@
 # Metric names, namespaces and dimensions follow the AWS docs:
 #   ALB:    AWS/ApplicationELB, LoadBalancer (+ TargetGroup)
 #   ECS:    AWS/ECS, ClusterName + ServiceName (no Container Insights needed)
-#   Aurora: AWS/RDS, DBClusterIdentifier
+#   Aurora: AWS/RDS, DBClusterIdentifier (+ Role for reader-only metrics)
 #   WAF:    AWS/WAFV2, WebACL + Region + Rule (Rule = ALL for the whole ACL)
 #   SQS:    AWS/SQS, QueueName
 
@@ -27,6 +27,11 @@ locals {
   db_dims    = { DBClusterIdentifier = var.aurora_cluster_identifier }
   queue_dims = { QueueName = var.payment_queue_name }
   dlq_dims   = { QueueName = var.payment_dlq_name }
+
+  # Every instance that's a reader right now, whatever its name. After a
+  # failover the roles swap, so a per-instance alarm would watch the wrong one.
+  db_reader_dims = { DBClusterIdentifier = var.aurora_cluster_identifier, Role = "READER" }
+
   waf_dims = {
     WebACL = var.waf_web_acl_name
     Region = data.aws_region.current.region
@@ -186,6 +191,23 @@ locals {
       datapoints  = 2
       comparison  = "GreaterThanThreshold"
       threshold   = local.t.aurora_connections
+      missing     = "notBreaching"
+    }
+    # Aurora replicas usually trail the writer by tens of milliseconds. A
+    # reader that falls seconds behind serves stale reads and would lose
+    # those seconds of writes if it were promoted. No readers, or a paused
+    # cluster, sends no data, which is fine.
+    aurora-replica-lag-high = {
+      description = "An Aurora reader is lagging behind the writer."
+      namespace   = "AWS/RDS"
+      metric      = "AuroraReplicaLag"
+      statistic   = "Maximum"
+      dimensions  = local.db_reader_dims
+      period      = 60
+      evaluations = 5
+      datapoints  = 3
+      comparison  = "GreaterThanThreshold"
+      threshold   = local.t.aurora_replica_lag_ms
       missing     = "notBreaching"
     }
     # WAF only reports BlockedRequests when it blocks something, so no data

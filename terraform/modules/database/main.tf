@@ -1,5 +1,12 @@
 locals {
   cluster_identifier = "${var.name_prefix}-aurora"
+
+  # Every subnet AZ except the writer's. Known at plan time on a live stack;
+  # on a fresh one it waits for the writer to exist.
+  reader_azs = [
+    for az in distinct(var.availability_zones) : az
+    if az != aws_rds_cluster_instance.writer.availability_zone
+  ]
 }
 
 resource "aws_db_subnet_group" "this" {
@@ -52,7 +59,10 @@ resource "aws_rds_cluster" "this" {
   depends_on = [aws_cloudwatch_log_group.postgresql]
 }
 
-# One writer, no readers. Serverless v2 has to use db.serverless.
+# The first instance, created as the writer. Serverless v2 has to use
+# db.serverless. Its AZ is left to RDS, as it always was: setting one now
+# would replace the live writer. After a failover this instance may be a
+# reader; the Terraform name only says which one was created first.
 resource "aws_rds_cluster_instance" "writer" {
   identifier           = "${local.cluster_identifier}-writer"
   cluster_identifier   = aws_rds_cluster.this.id
@@ -61,6 +71,36 @@ resource "aws_rds_cluster_instance" "writer" {
   engine_version       = aws_rds_cluster.this.engine_version
   db_subnet_group_name = aws_db_subnet_group.this.name
   publicly_accessible  = false
+
+  auto_minor_version_upgrade = true
+  apply_immediately          = true
+}
+
+# Readers, one per instance past the first. Each goes in a private subnet AZ
+# the writer isn't in, so losing one AZ leaves an instance to promote. That
+# is usually done in under 60 seconds, where a cluster with only a writer has to wait
+# for RDS to rebuild it (usually under 10 minutes, per the Aurora HA docs).
+#
+# Promotion tier 1 puts the reader first in line for failover and ties its
+# capacity to the writer's, so it's already sized to take over. It also
+# pauses and resumes with the writer when min capacity is 0, so an idle
+# testing stack still costs nothing for compute.
+#
+# Referencing the writer's AZ also makes Terraform create the writer first.
+# That matters: Aurora makes whichever instance comes up first the writer.
+resource "aws_rds_cluster_instance" "reader" {
+  count = var.instance_count - 1
+
+  identifier           = "${local.cluster_identifier}-reader-${count.index + 1}"
+  cluster_identifier   = aws_rds_cluster.this.id
+  instance_class       = "db.serverless"
+  engine               = aws_rds_cluster.this.engine
+  engine_version       = aws_rds_cluster.this.engine_version
+  db_subnet_group_name = aws_db_subnet_group.this.name
+  publicly_accessible  = false
+  promotion_tier       = 1
+
+  availability_zone = local.reader_azs[count.index % length(local.reader_azs)]
 
   auto_minor_version_upgrade = true
   apply_immediately          = true

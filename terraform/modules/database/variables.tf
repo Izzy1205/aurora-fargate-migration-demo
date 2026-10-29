@@ -8,6 +8,27 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
+variable "availability_zones" {
+  description = "AZs of the subnets in subnet_ids. Readers are placed in the ones the writer isn't in."
+  type        = list(string)
+}
+
+variable "instance_count" {
+  description = "Aurora instances, writer included. 1 is writer only; 2 adds a reader in another AZ to fail over to."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.instance_count >= 1 && var.instance_count <= 16 && floor(var.instance_count) == var.instance_count
+    error_message = "Use a whole number from 1 to 16 (one writer plus up to 15 readers)."
+  }
+
+  validation {
+    condition     = var.instance_count == 1 || length(distinct(var.availability_zones)) >= 2
+    error_message = "A reader needs a second AZ in the subnet group, or it would share the writer's AZ."
+  }
+}
+
 variable "security_group_id" {
   description = "Security group for the cluster."
   type        = string

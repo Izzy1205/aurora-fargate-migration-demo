@@ -13,6 +13,11 @@ output "private_subnet_ids" {
   value       = aws_subnet.private[*].id
 }
 
+output "private_subnet_azs" {
+  description = "AZs of the private subnets, in the same order as private_subnet_ids."
+  value       = aws_subnet.private[*].availability_zone
+}
+
 output "alb_security_group_id" {
   description = "ALB security group."
   value       = aws_security_group.alb.id

@@ -8,6 +8,18 @@ output "endpoint" {
   value       = aws_rds_cluster.this.endpoint
 }
 
+# Spreads connections across the readers. With no readers it points at the
+# writer, so it's always safe to use for reads.
+output "reader_endpoint" {
+  description = "Reader endpoint."
+  value       = aws_rds_cluster.this.reader_endpoint
+}
+
+output "reader_identifiers" {
+  description = "Reader instance identifiers. Empty when instance_count is 1."
+  value       = aws_rds_cluster_instance.reader[*].identifier
+}
+
 output "port" {
   description = "Postgres port."
   value       = aws_rds_cluster.this.port

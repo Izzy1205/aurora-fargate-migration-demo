@@ -13,6 +13,7 @@ locals {
   multi_az = true # interface endpoints in both AZs
 
   aurora_engine_version           = "16.9"
+  aurora_instance_count           = 2 # writer plus a reader in the other AZ
   aurora_min_capacity             = 1
   aurora_max_capacity             = 8
   aurora_seconds_until_auto_pause = 300 # ignored, min capacity is above 0

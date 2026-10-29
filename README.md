@@ -15,8 +15,12 @@ to patch, upgrade, and prove secure.
   their own role with a password in Secrets Manager. The app can only
   read and write rows; Flyway owns the schema. The master password stays
   with RDS for break-glass and is never given to the app or Flyway.
+  Each environment runs a writer and a reader in different AZs. If the
+  writer fails, Aurora promotes the reader, usually in under 60 seconds.
+  With no reader it has to rebuild the writer, usually in under 10
+  minutes. One line in env.hcl (`aurora_instance_count`) sets how many.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 14 CloudWatch alarms and a dashboard
+- Watches it all with 15 CloudWatch alarms and a dashboard
 
 3) How it all works
 Everything is Terraform, organized with Terragrunt into four layers:

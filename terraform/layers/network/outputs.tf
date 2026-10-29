@@ -15,6 +15,13 @@ output "private_subnet_ids" {
   value       = module.network.private_subnet_ids
 }
 
+# The data unit uses this to put the Aurora reader in a different AZ from
+# the writer.
+output "private_subnet_azs" {
+  description = "AZs of the private subnets, in the same order as private_subnet_ids."
+  value       = module.network.private_subnet_azs
+}
+
 output "alb_security_group_id" {
   description = "ALB security group."
   value       = module.network.alb_security_group_id
