@@ -14,10 +14,14 @@ BEGIN
   END IF;
 END $$;
 
--- Money and audit rows are add-only. The default privileges give app_user
--- UPDATE and DELETE on every new table, and db-logins re-grants them on
--- every deploy, so take them back here, after every migrate, on the tables
--- where nobody should ever edit or remove a row. Corrections are new rows.
+-- Payments and audit events are append-only by design. The app inserts
+-- them and never edits or removes one; a correction or reversal is a new
+-- payment row. The default privileges give app_user UPDATE and DELETE on
+-- every table Flyway creates, so take them back here. db-logins.sql does
+-- the same revoke right after its broad grant, because it runs before
+-- Flyway on every deploy and used to leave a window where the app had
+-- them. This copy is the backstop, and it covers the first deploy, when
+-- these tables don't exist until Flyway makes them.
 DO $$
 DECLARE
   t text;
