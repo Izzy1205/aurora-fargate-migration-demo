@@ -177,15 +177,41 @@ jobs:
       - name: build migration image
         run: docker build -t demo-migrate:ci db
 
-      - name: migrate to V2 (state before this release), then to latest
+      # Same order as a deploy to a stack built before the separate logins:
+      # V2 as the old owner, then db-logins, then the rest as the Flyway login.
+      - name: migrate to V2 (state before this release) as the admin user
+        run: |
+          docker run --rm --network host \
+            -e FLYWAY_URL=jdbc:postgresql://localhost:5432/postgres \
+            -e FLYWAY_USER=postgres \
+            demo-migrate:ci migrate -target=2
+
+      - name: set up DB logins the way the db-logins task does
+        run: |
+          # Trust auth ignores passwords, but the script requires them. These
+          # are random, never printed, and only live in this job.
+          APP_DB_PASSWORD=$(openssl rand -hex 20)
+          MIGRATOR_DB_PASSWORD=$(openssl rand -hex 20)
+          PGPASSWORD=$(openssl rand -hex 20)
+          export APP_DB_PASSWORD MIGRATOR_DB_PASSWORD PGPASSWORD
+          # Twice, to prove a re-run is safe.
+          for attempt in 1 2; do
+            echo "db-logins run $attempt"
+            docker run --rm --network host \
+              -e PGHOST=localhost -e PGDATABASE=postgres -e PGUSER=postgres \
+              -e PGSSLMODE=disable -e PGPASSWORD \
+              -e APP_DB_PASSWORD -e MIGRATOR_DB_PASSWORD \
+              --entrypoint /flyway/logins/db-logins.sh demo-migrate:ci
+          done
+
+      - name: migrate to latest as the Flyway login
         run: |
           run_flyway() {
             docker run --rm --network host \
               -e FLYWAY_URL=jdbc:postgresql://localhost:5432/postgres \
-              -e FLYWAY_USER=postgres \
+              -e FLYWAY_USER=migrator \
               demo-migrate:ci "$@"
           }
-          run_flyway migrate -target=2
           run_flyway migrate
           run_flyway validate
           run_flyway info
@@ -209,6 +235,23 @@ jobs:
             RAISE NOTICE 'ok: % existing rows untouched by the expand step', total;
           END $$;
           SQL
+
+      - name: check the app login can use rows but not change the schema
+        run: |
+          app() { psql -X -q -At -h localhost -U app_user -d postgres -v ON_ERROR_STOP=1 -c "$1"; }
+          denied() {
+            if app "$1" >/dev/null 2>&1; then echo "app_user was allowed: $1"; exit 1; fi
+            echo "ok, denied: $1"
+          }
+          app "SELECT count(*) FROM orders JOIN customers ON customers.id = orders.customer_id"
+          app "UPDATE orders SET status = status WHERE false"
+          denied "CREATE TABLE should_fail (id int)"
+          denied "ALTER TABLE orders ADD COLUMN should_fail int"
+          denied "DROP TABLE orders"
+          denied "SELECT 1 FROM flyway_schema_history"
+          owners=$(psql -X -At -h localhost -U postgres -c "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'")
+          if [ "$owners" != "migrator" ]; then echo "tables owned by: $owners, expected migrator"; exit 1; fi
+          echo "ok: every table is owned by migrator"
 
   app:
     name: app tests and image build

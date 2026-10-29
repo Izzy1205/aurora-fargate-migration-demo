@@ -11,7 +11,10 @@ to patch, upgrade, and prove secure.
 2) What this repo does
 - Runs the app in containers on ECS Fargate behind a load balancer
 - Puts a WAF in front to block common attacks and rate limit by IP
-- Stores data in Aurora PostgreSQL, with the password in Secrets Manager
+- Stores data in Aurora PostgreSQL. The app and Flyway each log in as
+  their own role with a password in Secrets Manager. The app can only
+  read and write rows; Flyway owns the schema. The master password stays
+  with RDS for break-glass and is never given to the app or Flyway.
 - Sends payment requests through an SQS queue with a dead letter queue
 - Watches it all with 14 CloudWatch alarms and a dashboard
 

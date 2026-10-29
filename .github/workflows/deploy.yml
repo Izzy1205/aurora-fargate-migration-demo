@@ -11,7 +11,8 @@ name: deploy
 # be started by hand and wait for reviewers too.
 # Any plan that deletes or replaces a resource fails (see tg-plan.yml).
 # Teardowns are done by hand with scripts/teardown.sh.
-# The release job pushes the scanned images, runs Flyway, and rolls the service.
+# The release job pushes the scanned images, sets up the DB logins, runs
+# Flyway as its own login, and rolls the service.
 on:
   push:
     branches: [main]
@@ -240,6 +241,7 @@ jobs:
       service: ${{ steps.out.outputs.service }}
       app_family: ${{ steps.out.outputs.app_family }}
       migration_family: ${{ steps.out.outputs.migration_family }}
+      db_logins_family: ${{ steps.out.outputs.db_logins_family }}
       subnets: ${{ steps.out.outputs.subnets }}
       migration_sg: ${{ steps.out.outputs.migration_sg }}
       app_repo: ${{ steps.out.outputs.app_repo }}
@@ -275,6 +277,7 @@ jobs:
             echo "service=$(o app_service_name)"
             echo "app_family=$(o app_task_family)"
             echo "migration_family=$(o migration_task_family)"
+            echo "db_logins_family=$(o db_logins_task_family)"
             echo "subnets=$(o private_subnet_ids_csv)"
             echo "migration_sg=$(o migration_security_group_id)"
             echo "app_repo=$(o app_ecr_repository)"
@@ -338,6 +341,23 @@ jobs:
           }
           push_once "$APP_REPO" demo-app
           push_once "$MIGRATION_REPO" demo-migrate
+
+      # Creates the app and Flyway logins, or resets their passwords to what
+      # is in their secrets, and hands the tables to the Flyway login. Safe
+      # to re-run. This is the only task that reads the master secret.
+      - name: set up DB logins in the private subnets
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          DB_LOGINS_FAMILY: ${{ needs.outputs.outputs.db_logins_family }}
+          SUBNETS: ${{ needs.outputs.outputs.subnets }}
+          SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
+          LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
+          CONTAINER: db-logins
+        run: |
+          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$DB_LOGINS_FAMILY" db-logins "$REGISTRY/$MIGRATION_REPO:$TAG")
+          export TASK_DEFINITION
+          bash scripts/run-migration.sh
 
       # Schema first. Expand-only, so the old code is fine with it.
       - name: run Flyway migration task in the private subnets
