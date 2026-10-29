@@ -18,6 +18,11 @@ locals {
   aurora_seconds_until_auto_pause = 300
   db_name                         = "demo"
 
+  # 2 is the writer plus a reader in the other AZ, so the demo can show a
+  # real failover. The reader pauses with the writer, so idle time stays
+  # free, but awake time costs about double. Set to 1 for writer only.
+  aurora_instance_count = 2
+
   app_desired_count = 2 # one task per AZ
   budget_limit_usd  = 10
 

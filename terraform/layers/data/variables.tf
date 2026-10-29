@@ -26,6 +26,16 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "private_subnet_azs" {
+  description = "AZs of the private subnets, same order. From the network unit."
+  type        = list(string)
+}
+
+variable "aurora_instance_count" {
+  description = "Aurora instances, writer included. 2 adds a reader in the other AZ for failover."
+  type        = number
+}
+
 variable "db_security_group_id" {
   description = "Aurora security group. From the network unit."
   type        = string

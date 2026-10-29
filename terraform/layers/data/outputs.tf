@@ -6,6 +6,11 @@ output "endpoint" {
   value       = module.database.endpoint
 }
 
+output "reader_endpoint" {
+  description = "Reader endpoint. Points at the writer when there are no readers."
+  value       = module.database.reader_endpoint
+}
+
 output "port" {
   description = "Postgres port."
   value       = module.database.port
