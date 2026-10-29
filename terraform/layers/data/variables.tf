@@ -68,3 +68,9 @@ variable "dr_region" {
   type        = string
   default     = "us-west-2"
 }
+
+variable "dr_copy_enabled" {
+  description = "Copy Aurora backups to dr_region. Off until the org SCP allows it there."
+  type        = bool
+  default     = false
+}

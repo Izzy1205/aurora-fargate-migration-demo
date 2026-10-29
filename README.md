@@ -19,9 +19,10 @@ to patch, upgrade, and prove secure.
   writer fails, Aurora promotes the reader, usually in under 60 seconds.
   With no reader it has to rebuild the writer, usually in under 10
   minutes. One line in env.hcl (`aurora_instance_count`) sets how many.
-- Backs up Aurora every day with AWS Backup and copies each backup to a
-  second region (us-west-2), so the data survives losing us-east-2.
-  Copies are kept 7 days. Restoring there is manual and takes hours.
+- Backs up Aurora every day with AWS Backup and keeps 7 days. Copying
+  each backup to a second region (us-west-2) is built but off
+  (`dr_copy_enabled`), because this AWS org's SCP only allows full use
+  of us-east-2. Turning it on is a policy change, not a code change.
 - Holds a paid family and medical leave data model in the schema (V6 to
   V9): claimants, employers, wages, claims, leave, benefit weeks,
   payments, documents, and an audit trail. SSNs are only a token plus a

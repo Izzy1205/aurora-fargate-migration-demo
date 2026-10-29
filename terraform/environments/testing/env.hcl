@@ -1,7 +1,8 @@
 locals {
-  environment = "testing"
-  aws_region  = "us-east-2"
-  dr_region   = "us-west-2" # backup copies
+  environment     = "testing"
+  aws_region      = "us-east-2"
+  dr_region       = "us-west-2" # backup copies
+  dr_copy_enabled = false       # org SCP blocks us-west-2
 
   # Bucket name stays out of the repo. Set TF_STATE_BUCKET.
   state_bucket = get_env("TF_STATE_BUCKET", "REPLACE-ME-tfstate-bucket")

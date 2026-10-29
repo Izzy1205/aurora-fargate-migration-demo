@@ -35,4 +35,5 @@ inputs = {
   aurora_seconds_until_auto_pause = local.env.aurora_seconds_until_auto_pause
   db_name                         = local.env.db_name
   dr_region                       = local.env.dr_region
+  dr_copy_enabled                 = local.env.dr_copy_enabled
 }
