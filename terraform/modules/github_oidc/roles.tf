@@ -61,6 +61,7 @@ resource "aws_iam_role_policy_attachment" "apply_poweruser" {
 }
 
 data "aws_iam_policy_document" "apply" {
+  #checkov:skip=CKV_AWS_356:kms:CreateKey has no resource ARN until the key exists
   source_policy_documents = [data.aws_iam_policy_document.deny_db_secret.json]
 
   statement {
@@ -120,9 +121,15 @@ data "aws_iam_policy_document" "apply" {
 
   # PowerUser alone got AccessDenied on the DR key's tags.
   statement {
-    sid       = "CreateTaggedKmsKeys"
-    actions   = ["kms:CreateKey", "kms:TagResource"]
+    sid       = "CreateKmsKeys"
+    actions   = ["kms:CreateKey"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "TagKmsKeys"
+    actions   = ["kms:TagResource"]
+    resources = ["arn:${local.part}:kms:*:${local.account}:key/*"]
   }
 
   statement {
