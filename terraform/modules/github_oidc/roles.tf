@@ -118,6 +118,13 @@ data "aws_iam_policy_document" "apply" {
     }
   }
 
+  # PowerUser alone got AccessDenied on the DR key's tags.
+  statement {
+    sid       = "CreateTaggedKmsKeys"
+    actions   = ["kms:CreateKey", "kms:TagResource"]
+    resources = ["*"]
+  }
+
   statement {
     sid       = "ServiceLinkedRoles"
     actions   = ["iam:CreateServiceLinkedRole"]
