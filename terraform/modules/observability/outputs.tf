@@ -4,8 +4,13 @@ output "alarm_topic_arn" {
 }
 
 output "alarm_names" {
-  description = "Names of the CloudWatch alarms."
-  value       = sort([for a in aws_cloudwatch_metric_alarm.this : a.alarm_name])
+  description = "Names of the CloudWatch alarms, metric and composite."
+  value = sort(concat(
+    [for a in aws_cloudwatch_metric_alarm.this : a.alarm_name],
+    [aws_cloudwatch_metric_alarm.latency_p95.alarm_name],
+    [for a in aws_cloudwatch_metric_alarm.burn : a.alarm_name],
+    [aws_cloudwatch_composite_alarm.fast_burn.alarm_name, aws_cloudwatch_composite_alarm.slow_burn.alarm_name],
+  ))
 }
 
 output "dashboard_name" {

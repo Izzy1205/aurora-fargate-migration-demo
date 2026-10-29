@@ -1,4 +1,5 @@
-# One dashboard with the same metrics the alarms watch. The first three
+# One dashboard with the same metrics the alarms watch, plus the SLO
+# widgets (SLI, burn rate, p95 latency) at the bottom. The first three
 # dashboards in an account are free, after that it's $3 a month.
 
 locals {
@@ -89,6 +90,46 @@ locals {
         concat(["AWS/SQS", "ApproximateAgeOfOldestMessage"], local.queue),
       ]
     },
+    # SLO widgets, using the same math as the alarms in slo.tf. The raw
+    # counts are hidden and only feed the expressions.
+    {
+      title   = "Availability SLI (% good requests per 5 min)"
+      stat    = "Sum"
+      metrics = concat(local.sli_inputs, [[{ expression = "IF(total > 0, 100 * (1 - bad / total), 100)", label = "Availability %", id = "sli" }]])
+      annotations = {
+        horizontal = [{ label = "SLO ${local.t.slo_availability_percent}%", value = local.t.slo_availability_percent }]
+      }
+    },
+    {
+      title   = "Error budget burn rate (per 5 min)"
+      stat    = "Sum"
+      metrics = concat(local.sli_inputs, [[{ expression = local.sli_burn, label = "Burn rate", id = "burn" }]])
+      annotations = {
+        horizontal = [
+          { label = "Fast burn ${local.fast_burn_rate}x", value = local.fast_burn_rate },
+          { label = "Slow burn ${local.slow_burn_rate}x", value = local.slow_burn_rate },
+        ]
+      }
+    },
+    {
+      title = "App response time p95 (seconds)"
+      stat  = "p95"
+      metrics = [
+        ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", local.lb, "TargetGroup", local.tg],
+      ]
+      annotations = {
+        horizontal = [{ label = "Alarm ${local.t.latency_p95_seconds}s", value = local.t.latency_p95_seconds }]
+      }
+    },
+  ]
+
+  # Inputs for the SLI and burn rate widgets. Same ids as slo.tf.
+  sli_inputs = [
+    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", local.lb, { id = "requests", visible = false }],
+    ["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", local.lb, { id = "elb5xx", visible = false }],
+    ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", local.lb, "TargetGroup", local.tg, { id = "app5xx", visible = false }],
+    [{ expression = local.sli_bad, id = "bad", visible = false }],
+    [{ expression = local.sli_total, id = "total", visible = false }],
   ]
 }
 
@@ -104,7 +145,9 @@ resource "aws_cloudwatch_dashboard" "this" {
         y      = floor(i / 2) * 6
         width  = 12
         height = 6
-        properties = {
+        # Annotations only go on widgets that set them, so the older
+        # widgets render exactly as before.
+        properties = merge({
           title   = w.title
           region  = local.region
           stat    = w.stat
@@ -112,7 +155,7 @@ resource "aws_cloudwatch_dashboard" "this" {
           view    = "timeSeries"
           stacked = false
           metrics = w.metrics
-        }
+        }, { for k, v in { annotations = try(w.annotations, null) } : k => v if v != null })
       }
     ]
   })

@@ -26,7 +26,7 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The tokenization service that fills in those tokens is next.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 15 CloudWatch alarms and a dashboard
+- Watches it all with 22 CloudWatch alarms (including an availability SLO with burn rate alerts and a p95 latency alarm) and a dashboard
 
 3) How it all works
 Everything is Terraform, organized with Terragrunt into four layers:
