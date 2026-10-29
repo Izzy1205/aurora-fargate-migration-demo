@@ -1,0 +1,46 @@
+variable "name_prefix" {
+  description = "Prefix for every name, e.g. migdemo-testing."
+  type        = string
+}
+
+variable "cluster_arn" {
+  description = "ARN of the Aurora cluster to back up."
+  type        = string
+}
+
+variable "backup_role_name" {
+  description = "Name of the role AWS Backup runs as. Bootstrap creates it, so the stack never has to make a role outside the workload boundary."
+  type        = string
+}
+
+# 17:00 UTC is 1 PM Eastern in summer, noon in winter. AWS Backup jobs
+# for Aurora fail if they start during, or in the hour before, the
+# cluster's automated backup or maintenance window. RDS picks both at
+# random from 03:00 to 11:00 UTC in us-east-2, so 17:00 is always clear.
+variable "schedule" {
+  description = "When the daily backup starts, as an AWS Backup cron expression in UTC."
+  type        = string
+  default     = "cron(0 17 * * ? *)"
+}
+
+variable "retention_days" {
+  description = "Days to keep each backup in the home region."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.retention_days >= 1 && floor(var.retention_days) == var.retention_days
+    error_message = "retention_days must be a whole number of days, at least 1."
+  }
+}
+
+variable "dr_retention_days" {
+  description = "Days to keep each copy in the DR region."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.dr_retention_days >= 1 && floor(var.dr_retention_days) == var.dr_retention_days
+    error_message = "dr_retention_days must be a whole number of days, at least 1."
+  }
+}

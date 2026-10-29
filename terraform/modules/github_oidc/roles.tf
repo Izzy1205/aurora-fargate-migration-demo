@@ -112,6 +112,26 @@ data "aws_iam_policy_document" "apply" {
     }
   }
 
+  # The backup plan's selection hands AWS Backup the role bootstrap made
+  # (backup.tf). GetRole is for the main stack's lookup of that role,
+  # which runs on every plan, apply and destroy.
+  statement {
+    sid       = "ReadBackupRole"
+    actions   = ["iam:GetRole"]
+    resources = [aws_iam_role.backup.arn]
+  }
+
+  statement {
+    sid       = "PassBackupRoleToBackup"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.backup.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["backup.amazonaws.com"]
+    }
+  }
+
   statement {
     sid       = "ServiceLinkedRoles"
     actions   = ["iam:CreateServiceLinkedRole"]
@@ -182,10 +202,12 @@ data "aws_iam_policy_document" "apply" {
     effect    = "Deny"
     actions   = ["iam:PassRole"]
     resources = ["*"]
+    # backup.amazonaws.com is only reachable with the backup role. The
+    # allows above never let a project role go to AWS Backup.
     condition {
       test     = "StringNotEquals"
       variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com"]
+      values   = ["ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "backup.amazonaws.com"]
     }
   }
 

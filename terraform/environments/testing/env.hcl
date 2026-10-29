@@ -4,6 +4,7 @@
 locals {
   environment = "testing"
   aws_region  = "us-east-2"
+  dr_region   = "us-west-2" # Aurora backup copies go here
 
   # Existing bucket, created by hand. The name stays out of the repo: set
   # TF_STATE_BUCKET locally, CI sets it from the TF_STATE_BUCKET variable.

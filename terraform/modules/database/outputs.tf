@@ -3,6 +3,11 @@ output "cluster_identifier" {
   value       = aws_rds_cluster.this.cluster_identifier
 }
 
+output "cluster_arn" {
+  description = "Cluster ARN. The backup plan selects the cluster by it."
+  value       = aws_rds_cluster.this.arn
+}
+
 output "endpoint" {
   description = "Writer endpoint."
   value       = aws_rds_cluster.this.endpoint

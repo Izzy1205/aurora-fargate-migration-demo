@@ -19,6 +19,9 @@ to patch, upgrade, and prove secure.
   writer fails, Aurora promotes the reader, usually in under 60 seconds.
   With no reader it has to rebuild the writer, usually in under 10
   minutes. One line in env.hcl (`aurora_instance_count`) sets how many.
+- Backs up Aurora every day with AWS Backup and copies each backup to a
+  second region (us-west-2), so the data survives losing us-east-2.
+  Copies are kept 7 days. Restoring there is manual and takes hours.
 - Holds a paid family and medical leave data model in the schema (V6 to
   V9): claimants, employers, wages, claims, leave, benefit weeks,
   payments, documents, and an audit trail. SSNs are only a token plus a
@@ -26,7 +29,7 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The tokenization service that fills in those tokens is next.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 22 CloudWatch alarms (including an availability SLO with burn rate alerts and a p95 latency alarm) and a dashboard
+- Watches it all with 22 CloudWatch alarms (including an availability SLO with burn rate alerts and a p95 latency alarm) and a dashboard, and emails the same list if a backup or its copy fails
 
 3) How it all works
 Everything is Terraform, organized with Terragrunt into four layers:
@@ -50,8 +53,8 @@ is always a manual deploy.
 Teardown is manual on purpose so the pipeline can never delete things
 on its own. Sign in to AWS first, since an expired session partway
 through leaves a mess. Then run `./scripts/teardown.sh testing`,
-check each plan, and type yes. The bootstrap stays until you remove
-it yourself.
+check each plan, and type yes. It deletes the backups in both regions
+too. The bootstrap stays until you remove it yourself.
 
 6) How I built this
 I designed it, ran it, and debugged it myself, and I used an AI

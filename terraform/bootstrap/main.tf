@@ -49,3 +49,8 @@ output "deploy_role_arn" {
   description = "GitHub variable AWS_DEPLOY_ROLE_ARN."
   value       = module.github_oidc.deploy_role_arn
 }
+
+output "backup_role_arn" {
+  description = "Role AWS Backup runs as for the Aurora backups. The data layer finds it by name, nothing to copy anywhere."
+  value       = module.github_oidc.backup_role_arn
+}

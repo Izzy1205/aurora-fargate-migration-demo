@@ -13,9 +13,8 @@ variable "environment" {
   type        = string
 }
 
-# Only read by the provider.tf that Terragrunt generates, which tflint does
-# not see when it lints this folder on its own.
-# tflint-ignore: terraform_unused_declarations
+# Read by the provider.tf that Terragrunt generates and by the DR
+# provider in providers.tf.
 variable "owner" {
   description = "Owner tag value. Terragrunt sets it from MIGDEMO_OWNER."
   type        = string
@@ -64,4 +63,10 @@ variable "aurora_seconds_until_auto_pause" {
 variable "db_name" {
   description = "Database name."
   type        = string
+}
+
+variable "dr_region" {
+  description = "Second region for the Aurora backup copies. Must not be the home region."
+  type        = string
+  default     = "us-west-2"
 }

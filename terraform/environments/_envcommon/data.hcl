@@ -41,4 +41,5 @@ inputs = {
   aurora_max_capacity             = local.env.aurora_max_capacity
   aurora_seconds_until_auto_pause = local.env.aurora_seconds_until_auto_pause
   db_name                         = local.env.db_name
+  dr_region                       = local.env.dr_region
 }

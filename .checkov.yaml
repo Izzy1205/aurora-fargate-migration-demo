@@ -18,7 +18,6 @@ skip-check:
   # Built and destroyed the same day, so protection would only block teardown.
   - CKV_AWS_139    # RDS deletion protection
   - CKV_AWS_150    # ALB deletion protection
-  - CKV2_AWS_8     # AWS Backup plan for RDS
   # Encrypted with AWS managed keys. A customer managed KMS key adds a 7 day
   # minimum deletion wait, which fights "build, demo, destroy".
   - CKV_AWS_327    # RDS with KMS CMK

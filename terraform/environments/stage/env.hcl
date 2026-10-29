@@ -7,6 +7,7 @@
 locals {
   environment = "stage"
   aws_region  = "us-east-2"
+  dr_region   = "us-west-2" # Aurora backup copies go here
 
   state_bucket = "REPLACE-ME-stage-tfstate-bucket"
 

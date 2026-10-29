@@ -51,4 +51,16 @@ data "aws_iam_policy_document" "alarms_key" {
       identifiers = ["cloudwatch.amazonaws.com"]
     }
   }
+
+  # Same for EventBridge, which delivers the backup failure email
+  # (backup_alerts.tf). The topic policy limits it to that one rule.
+  statement {
+    sid       = "EventBridgeUseKey"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+  }
 }

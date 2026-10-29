@@ -8,8 +8,9 @@ resource "aws_sns_topic" "alarms" {
 }
 
 # Replaces the default topic policy. Same-account IAM users and roles still
-# manage the topic through their own IAM policies, so the only thing this
-# needs to add is CloudWatch, and only for this env's alarms.
+# manage the topic through their own IAM policies, so the only things this
+# needs to add are CloudWatch, only for this env's alarms, and EventBridge,
+# only for the backup failure rule (backup_alerts.tf).
 resource "aws_sns_topic_policy" "alarms" {
   arn    = aws_sns_topic.alarms.arn
   policy = data.aws_iam_policy_document.alarms_topic.json
@@ -33,6 +34,21 @@ data "aws_iam_policy_document" "alarms_topic" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+
+  statement {
+    sid       = "BackupFailureRulePublish"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_cloudwatch_event_rule.backup_failed.arn]
     }
   }
 }

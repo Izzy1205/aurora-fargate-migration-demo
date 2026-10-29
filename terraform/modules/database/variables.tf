@@ -71,6 +71,21 @@ variable "iam_database_authentication_enabled" {
   default     = true
 }
 
+# Days of in-region point in time restore. Was hardcoded at 1. Aurora
+# doesn't charge for backup storage up to the size of the cluster volume,
+# and this cluster holds very little, so 7 days should cost nothing or a
+# few cents. Changing it is an in-place update, no replace.
+variable "backup_retention_period" {
+  description = "Days Aurora keeps its automated backups (1 to 35)."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.backup_retention_period >= 1 && var.backup_retention_period <= 35 && floor(var.backup_retention_period) == var.backup_retention_period
+    error_message = "Use a whole number from 1 to 35."
+  }
+}
+
 variable "log_retention_days" {
   description = "Retention for the exported Postgres log group."
   type        = number

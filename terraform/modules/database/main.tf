@@ -22,6 +22,10 @@ resource "aws_cloudwatch_log_group" "postgresql" {
 }
 
 resource "aws_rds_cluster" "this" {
+  # The plan is modules/backup, which the data layer points at this
+  # cluster's ARN. checkov can't follow an output from one module into
+  # another, so it can't see the link.
+  #checkov:skip=CKV2_AWS_8:Backed up by modules/backup, selected by ARN in layers/data
   cluster_identifier = local.cluster_identifier
   engine             = "aurora-postgresql"
   engine_mode        = "provisioned" # Serverless v2 runs under the provisioned engine mode
@@ -40,7 +44,7 @@ resource "aws_rds_cluster" "this" {
   iam_database_authentication_enabled = var.iam_database_authentication_enabled
   enabled_cloudwatch_logs_exports     = ["postgresql"]
   copy_tags_to_snapshot               = true
-  backup_retention_period             = 1
+  backup_retention_period             = var.backup_retention_period
 
   # Demo only, it's torn down the same day. Real stacks want deletion
   # protection and a final snapshot.

@@ -17,3 +17,8 @@ output "deploy_role_arn" {
   description = "Set as GitHub variable AWS_DEPLOY_ROLE_ARN."
   value       = aws_iam_role.deploy.arn
 }
+
+output "backup_role_arn" {
+  description = "Role AWS Backup runs as. The main stack's data layer finds it by name."
+  value       = aws_iam_role.backup.arn
+}
