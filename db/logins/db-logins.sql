@@ -15,6 +15,12 @@ SELECT format('CREATE ROLE %I', :'migrator_user')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'migrator_user') \gexec
 SELECT format('CREATE ROLE %I', :'app_user')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app_user') \gexec
+-- Group role for the SSN token service. NOLOGIN: a login is granted
+-- membership. TODO: add a token service login (its own secret in
+-- modules/database/logins.tf, password set here) and GRANT ssn_vault_rw to
+-- it. Until then nothing can log in with vault access.
+SELECT 'CREATE ROLE ssn_vault_rw NOLOGIN'
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_rw') \gexec
 
 -- Set the passwords from the secrets every run, so bumping the secret
 -- version in Terraform and deploying is all a rotation takes.
@@ -84,3 +90,15 @@ ORDER BY t \gexec
 -- The app has no business with Flyway's history table.
 SELECT format('REVOKE ALL ON public.flyway_schema_history FROM %I', :'app_user')
 WHERE to_regclass('public.flyway_schema_history') IS NOT NULL \gexec
+
+-- The SSN vault is for the token service only. The broad grant above would
+-- give app_user the encrypted SSNs on every deploy, so take it back in the
+-- same run. afterMigrate.sql repeats this as the backstop.
+SELECT format('REVOKE ALL ON public.ssn_vault FROM %I', :'app_user')
+WHERE to_regclass('public.ssn_vault') IS NOT NULL \gexec
+SELECT format('REVOKE ALL ON SEQUENCE public.ssn_vault_id_seq FROM %I', :'app_user')
+WHERE to_regclass('public.ssn_vault_id_seq') IS NOT NULL \gexec
+SELECT 'GRANT SELECT, INSERT ON public.ssn_vault TO ssn_vault_rw'
+WHERE to_regclass('public.ssn_vault') IS NOT NULL \gexec
+SELECT 'GRANT INSERT ON public.audit_event TO ssn_vault_rw'
+WHERE to_regclass('public.audit_event') IS NOT NULL \gexec

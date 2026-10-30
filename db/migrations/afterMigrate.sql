@@ -35,3 +35,21 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- The SSN vault is for the token service only (V10). Same reason as above:
+-- default privileges give app_user row access to it.
+DO $$
+BEGIN
+  IF to_regclass('public.ssn_vault') IS NULL THEN
+    RETURN;
+  END IF;
+  REVOKE ALL ON public.ssn_vault FROM PUBLIC;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
+    REVOKE ALL ON public.ssn_vault FROM app_user;
+    REVOKE ALL ON SEQUENCE public.ssn_vault_id_seq FROM app_user;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_rw') THEN
+    GRANT SELECT, INSERT ON public.ssn_vault TO ssn_vault_rw;
+    GRANT INSERT ON public.audit_event TO ssn_vault_rw;
+  END IF;
+END $$;
