@@ -1,0 +1,3 @@
+# False positive: a public SHA-256 checksum for the opentelemetry-api jar from Maven Central,
+# flagged by generic-api-key because the variable name contains "API". Not a secret.
+174086b90987753071689171d7ea6f38169032c5:db/Dockerfile:generic-api-key:58
