@@ -78,6 +78,22 @@ data "aws_iam_policy_document" "apply" {
     }
   }
 
+  # The SSN token service's roles carry their own, narrower boundary.
+  statement {
+    sid = "ManageVaultRolesWithVaultBoundary"
+    actions = [
+      "iam:CreateRole", "iam:PutRolePermissionsBoundary",
+      "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+    ]
+    resources = [local.vault_roles]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.vault_boundary.arn]
+    }
+  }
+
   statement {
     sid = "ReadAndTidyProjectRoles"
     actions = [
@@ -144,7 +160,23 @@ data "aws_iam_policy_document" "apply" {
     condition {
       test     = "StringNotEquals"
       variable = "iam:PermissionsBoundary"
-      values   = [aws_iam_policy.workload_boundary.arn]
+      values   = [aws_iam_policy.workload_boundary.arn, aws_iam_policy.vault_boundary.arn]
+    }
+  }
+
+  # The vault boundary allows the SSN key, so no other role may get it.
+  statement {
+    sid    = "NoVaultBoundaryOnOtherRoles"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole", "iam:PutRolePermissionsBoundary",
+      "iam:PutRolePolicy", "iam:AttachRolePolicy",
+    ]
+    not_resources = [local.vault_roles]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.vault_boundary.arn]
     }
   }
 
@@ -163,7 +195,7 @@ data "aws_iam_policy_document" "apply" {
       "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
       "iam:TagPolicy", "iam:UntagPolicy",
     ]
-    resources = [aws_iam_policy.workload_boundary.arn]
+    resources = [aws_iam_policy.workload_boundary.arn, aws_iam_policy.vault_boundary.arn]
   }
 
   statement {
@@ -261,7 +293,7 @@ data "aws_iam_policy_document" "deploy" {
   statement {
     sid       = "RollService"
     actions   = ["ecs:UpdateService", "ecs:DescribeServices"]
-    resources = [local.service_arn]
+    resources = local.service_arns
   }
 
   statement {
