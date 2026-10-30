@@ -97,7 +97,7 @@ variable "migrator_username" {
 }
 
 variable "app_image_tag" {
-  description = "Image tag for the first task definitions. CI registers new revisions with the commit SHA."
+  description = "Image tag for the first task definitions only. CI registers new revisions pinned by digest (repo@sha256:...) and labels them with the commit SHA."
   type        = string
   default     = "bootstrap"
 }
