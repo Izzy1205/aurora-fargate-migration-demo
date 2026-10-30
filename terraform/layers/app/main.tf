@@ -48,6 +48,7 @@ module "ecs" {
 
   app_environment = [
     { name = "PAYMENT_QUEUE_URL", value = module.queue.queue_url },
+    { name = "SSN_KMS_KEY_ID", value = module.ssn_vault.kms_key_arn },
   ]
 }
 
@@ -64,6 +65,22 @@ resource "aws_iam_role_policy" "app_payment_queue" {
   name   = "payment-queue"
   role   = module.ecs.app_task_role_name
   policy = module.queue.task_policy_json
+}
+
+# Key and HMAC pepper for the SSN token service. TODO: inject the pepper and
+# a token service DB login as task secrets (modules/ecs secrets, plus
+# GetSecretValue and kms:Decrypt on the execution role). Until then the
+# /ssn endpoints answer 503.
+module "ssn_vault" {
+  source = "../../modules/ssn_vault"
+
+  name_prefix = local.name_prefix
+}
+
+resource "aws_iam_role_policy" "app_ssn_vault" {
+  name   = "ssn-vault"
+  role   = module.ecs.app_task_role_name
+  policy = module.ssn_vault.task_policy_json
 }
 
 # Web ACL on the ALB. Lives in this unit so it's created and destroyed with
