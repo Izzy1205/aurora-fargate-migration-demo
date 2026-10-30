@@ -1,5 +1,6 @@
 # Regional WAF in front of the ALB. Default allow, then AWS managed rule
-# groups and a per-IP rate limit decide what gets blocked.
+# groups and per-IP rate limits (a tight one on /ssn/reveal) decide what
+# gets blocked.
 #
 # ALB health checks to /health go straight from the ALB nodes to the
 # targets. They never pass through the web ACL, so no rule here can mark a
@@ -56,6 +57,61 @@ resource "aws_wafv2_web_acl" "this" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name_prefix}-AWSManagedRulesAmazonIpReputationList"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Reveal turns a token back into an SSN, so it gets a much tighter cap than
+  # the rest of the site. A person reveals one record at a time; a script
+  # walking tokens does not. Blocked callers get a 429. This only slows a
+  # drain: the real limits are the actor, reason and audit row on each
+  # reveal, and later a per-actor limit in the app.
+  rule {
+    name     = "rate-limit-ssn-reveal"
+    priority = 15
+
+    action {
+      dynamic "block" {
+        for_each = local.rate_action == "block" ? [1] : []
+        content {
+          custom_response {
+            response_code = 429
+          }
+        }
+      }
+      dynamic "count" {
+        for_each = local.rate_action == "count" ? [1] : []
+        content {}
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = var.reveal_rate_limit
+        evaluation_window_sec = 60
+        aggregate_key_type    = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/ssn/reveal"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-rate-limit-ssn-reveal"
       sampled_requests_enabled   = true
     }
   }

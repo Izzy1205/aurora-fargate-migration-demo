@@ -19,6 +19,17 @@ variable "rate_limit" {
   }
 }
 
+variable "reveal_rate_limit" {
+  description = "Requests one IP may send to /ssn/reveal in 1 minute before it gets a 429."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.reveal_rate_limit >= 10 && var.reveal_rate_limit <= 2000000000
+    error_message = "WAF accepts a rate limit between 10 and 2,000,000,000."
+  }
+}
+
 variable "count_only" {
   description = "Count matches instead of blocking them, for a first rollout. Nothing is blocked while this is true."
   type        = bool

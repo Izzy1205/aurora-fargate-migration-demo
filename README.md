@@ -107,6 +107,9 @@ Endpoints:
 - `POST /ssn/reveal` takes `{"token": "...", "reason": "..."}`, with the
   actor from `X-Actor` for now. 401 with no actor, 400 with no reason,
   404 for a token that is malformed or unknown.
+- The WAF allows 10 reveals per minute from one IP and answers 429 after
+  that (`reveal_rate_limit` in `terraform/modules/waf`). It slows a script
+  walking tokens; the actor, reason and audit row are still the real gate.
 - Both answer 503 `ssn service unavailable` if anything below is missing
   or failing, and never echo input. Responses are `no-store`.
 
@@ -189,6 +192,7 @@ Not done yet:
   reveal" role check, instead of a header.
 - The token service runs inside the app task and uses its role. Its own
   task and role would keep the key away from the rest of the app.
-- Rate limiting on reveal, two-person approval for bulk reveal.
+- A per-actor reveal limit in the app, and two-person approval for bulk
+  reveal. The WAF only limits by IP.
 - A key rotation re-encrypt job (rows record their key ARN).
 - Claimant sign-up and the wage loader calling tokenize.
