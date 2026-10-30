@@ -24,9 +24,9 @@ variable "single_az_endpoints" {
 }
 
 variable "interface_endpoints" {
-  description = "Interface endpoint service suffixes. These replace a NAT gateway for Fargate."
+  description = "Interface endpoint service suffixes. These replace a NAT gateway for Fargate. kms is for the SSN token service (DescribeKey, Encrypt, Decrypt)."
   type        = list(string)
-  default     = ["ecr.api", "ecr.dkr", "secretsmanager", "logs", "sqs"]
+  default     = ["ecr.api", "ecr.dkr", "secretsmanager", "logs", "sqs", "kms"]
 }
 
 variable "flow_log_retention_days" {
