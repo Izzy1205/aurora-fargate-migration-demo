@@ -319,6 +319,7 @@ def get_seed_store() -> SeedStore:
 # Exactly what FastAPI answers for a route that doesn't exist, so outside
 # testing this endpoint can't be told apart from no endpoint at all.
 _NOT_FOUND = {"detail": "Not Found"}
+SEED_INPUT_HELP = "send the ssn_token and ssn_hmac exactly as /ssn/tokenize returned them"
 
 
 # Every method is routed here so that outside testing even a GET gets the
@@ -344,8 +345,10 @@ async def demo_seed_claim(request: Request) -> JSONResponse:
         return JSONResponse({"detail": "invalid request"}, status_code=422, headers=NO_STORE)
     try:
         ssn_token, ssn_hmac = check_seed_input(body.get("ssn_token"), body.get("ssn_hmac"))
-    except SeedInputError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400, headers=NO_STORE)
+    except SeedInputError:
+        # A fixed message, never the exception text (CodeQL
+        # py/stack-trace-exposure).
+        return JSONResponse({"detail": SEED_INPUT_HELP}, status_code=400, headers=NO_STORE)
     store = get_seed_store()
     try:
         result = await run_in_threadpool(store.seed_claim, ssn_token, ssn_hmac, actor)
