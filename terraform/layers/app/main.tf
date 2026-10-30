@@ -66,17 +66,25 @@ resource "aws_iam_role_policy" "app_payment_queue" {
   policy = module.queue.task_policy_json
 }
 
-# Key and HMAC pepper for the SSN token service. TODO: inject the pepper, the
-# key ARN (SSN_KMS_KEY_ID) and a token service DB login into the app task in
-# one planned change (modules/ecs secrets, plus GetSecretValue on the
-# execution role). Any change to app_environment or secrets replaces the
-# Terraform-owned task definition, which the deploy delete gate blocks, so
-# that change needs its own PR and a deliberate replace. Until then the /ssn
-# endpoints answer 503.
+# Key, HMAC pepper and DB access for the SSN token service. Nothing here
+# touches the task definition: the app finds the key by its alias
+# (alias/<name_prefix>-ssn), reads the pepper secret by name, and signs in to
+# Aurora as ssn_vault_login with an IAM auth token, all with the task role.
+# Changing the task definition's env or secrets would replace it, and the
+# deploy delete gate blocks replaces.
+#
+# The cluster resource ID (for the rds-db:connect ARN) is read here, not passed
+# from the data layer as an output: a new output only exists in state after
+# the data layer is applied, so PR plans (which never apply) couldn't see it.
+data "aws_rds_cluster" "this" {
+  cluster_identifier = "${local.name_prefix}-aurora"
+}
+
 module "ssn_vault" {
   source = "../../modules/ssn_vault"
 
-  name_prefix = local.name_prefix
+  name_prefix            = local.name_prefix
+  db_cluster_resource_id = data.aws_rds_cluster.this.cluster_resource_id
 }
 
 resource "aws_iam_role_policy" "app_ssn_vault" {

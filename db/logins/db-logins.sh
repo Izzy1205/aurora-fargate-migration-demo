@@ -29,4 +29,4 @@ until psql -X -q -t -c 'SELECT 1' >/dev/null 2>&1; do
 done
 
 psql -X -q -v ON_ERROR_STOP=1 -f "$(dirname "$0")/db-logins.sql"
-echo "DB logins ready: ${APP_DB_USER} (rows only), ${MIGRATOR_DB_USER} (schema owner)."
+echo "DB logins ready: ${APP_DB_USER} (rows only), ${MIGRATOR_DB_USER} (schema owner), ssn_vault_login (SSN vault, IAM auth)."

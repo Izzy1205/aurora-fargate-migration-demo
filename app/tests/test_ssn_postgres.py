@@ -18,6 +18,7 @@ from demo_app.ssn import FakeEncryptor, PostgresVaultStore, SsnTokenService
 DSN = os.environ.get("SSN_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="SSN_TEST_PG_DSN not set")
 MIGRATIONS = pathlib.Path(__file__).resolve().parents[2] / "db" / "migrations"
+calls: list[int] = []
 PEPPER = bytes(range(32))
 
 
@@ -34,8 +35,11 @@ def db():
     for role in ("app_user", "migrator"):
         admin.execute(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{role}') THEN CREATE ROLE {role} LOGIN; END IF; END $$")
     admin.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='ssn_vault_rw') THEN CREATE ROLE ssn_vault_rw NOLOGIN; END IF; END $$")
-    admin.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='ssn_svc') THEN CREATE ROLE ssn_svc LOGIN; END IF; END $$")
-    admin.execute("GRANT ssn_vault_rw TO ssn_svc")
+    # The vault login as db-logins.sql creates it: no password, IAM auth on
+    # Aurora (rds_iam does not exist here, so that grant is skipped).
+    admin.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='ssn_vault_login') THEN CREATE ROLE ssn_vault_login; END IF; END $$")
+    admin.execute("ALTER ROLE ssn_vault_login WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD NULL")
+    admin.execute("GRANT ssn_vault_rw TO ssn_vault_login")
     base = psycopg.conninfo.conninfo_to_dict(DSN)
     with psycopg.connect(**{**base, "dbname": name}, autocommit=True) as c:
         # The parts of db-logins.sql that matter here.
@@ -60,8 +64,10 @@ def db():
 
 def _svc(conninfo):
     s = DbSettings(host=conninfo.get("host", "localhost"), port=int(conninfo.get("port", 5432)),
-                   dbname=conninfo["dbname"], user="ssn_svc", password="", sslmode="disable")
-    return SsnTokenService(PostgresVaultStore(s), FakeEncryptor(), PEPPER)
+                   dbname=conninfo["dbname"], user="ssn_vault_login", password="", sslmode="disable")
+    # Stands in for the IAM auth token: called once per connection.
+    calls.clear()
+    return SsnTokenService(PostgresVaultStore(s, password_provider=lambda: calls.append(1) or ""), FakeEncryptor(), PEPPER)
 
 
 def test_app_user_cannot_read_vault(db):
@@ -73,7 +79,7 @@ def test_app_user_cannot_read_vault(db):
 
 
 def test_vault_role_cannot_update_or_delete(db):
-    with psycopg.connect(**{**db, "user": "ssn_svc"}) as c:
+    with psycopg.connect(**{**db, "user": "ssn_vault_login"}) as c:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             c.execute("DELETE FROM ssn_vault")
 
@@ -95,6 +101,25 @@ def test_tokenize_and_reveal_against_postgres(db):
     assert len(rows) == 1
     assert rows[0][:4] == ("staff-1", "ssn.reveal", "identity check", "ssn_vault")
     assert "900000001" not in rows[0][4]
+    assert calls, "password provider was not used"
+
+
+def test_unknown_ticket_and_audit_failure_against_postgres(db):
+    from demo_app.ssn import TokenNotFound
+
+    svc = _svc(db)
+    with pytest.raises(TokenNotFound):
+        svc.reveal("tok_" + "Z" * 32, actor="staff-1", reason="x")
+    a = svc.tokenize("900-00-0003")
+    # Make the audit insert fail: the reveal must fail with no SSN returned.
+    with psycopg.connect(**db) as c:
+        c.execute("REVOKE INSERT ON audit_event FROM ssn_vault_rw")
+    try:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            svc.reveal(a.ssn_token, actor="staff-1", reason="x")
+    finally:
+        with psycopg.connect(**db) as c:
+            c.execute("GRANT INSERT ON audit_event TO ssn_vault_rw")
 
 
 def test_raw_ssn_rejected_as_token(db):

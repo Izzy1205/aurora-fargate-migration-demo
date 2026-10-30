@@ -49,8 +49,12 @@ class VaultStore(Protocol):
 
 
 class PostgresVaultStore:
-    def __init__(self, settings: DbSettings) -> None:
+    """password_provider, if given, is called for every connection. In AWS
+    it mints an IAM auth token, so the vault login has no stored password."""
+
+    def __init__(self, settings: DbSettings, password_provider: Callable[[], str] | None = None) -> None:
         self._settings = settings
+        self._password = password_provider
 
     def _connect(self) -> psycopg.Connection[Any]:
         s = self._settings
@@ -59,7 +63,7 @@ class PostgresVaultStore:
             port=s.port,
             dbname=s.dbname,
             user=s.user,
-            password=s.password,
+            password=self._password() if self._password else s.password,
             sslmode=s.sslmode,
             connect_timeout=s.connect_timeout,
             application_name="migdemo-ssn-token",

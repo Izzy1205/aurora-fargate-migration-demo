@@ -31,7 +31,7 @@ to patch, upgrade, and prove secure.
   payments, documents, and an audit trail. SSNs are only a token plus a
   keyed hash, and the database refuses a second payment for the same
   claim and week. Payments and audit rows are add-only for the app login.
-  The tokenization service that fills in those tokens is next.
+  The token service that fills them in is described in section 8.
 - Sends payment requests through an SQS queue with a dead letter queue
 - Watches it all with 22 CloudWatch alarms and a dashboard, including an
   availability SLO with burn rate alerts and a p95 latency alarm. It also
@@ -76,19 +76,78 @@ you mostly need:
   kept in Secrets Manager instead of in code
 
 The network, database, WAF, queue, alarms, and pipeline stay the same.
+
 8) SSN token service
-The database holds the ticket, the vault holds the coat. `claimant` only
-ever has `ssn_token` (a random `tok_...` value) and `ssn_hmac` (a keyed
-hash, so duplicate checks and wage matching are a plain equals). The real
-number lives in `ssn_vault` (V10), encrypted with its own KMS key.
-- `POST /ssn/tokenize` takes an SSN and returns the token and HMAC. Same
-  SSN, same token, every time.
-- `POST /ssn/reveal` takes a token and a reason, with the actor from
-  `X-Actor` for now. It reads the row, writes an `audit_event` row
-  (`ssn.reveal`, who, why, which token, never the SSN), and decrypts, all
-  in one transaction. No audit row, no SSN. Responses are `no-store`.
-- Code: `app/src/demo_app/ssn/`. Key and pepper secret:
-  `terraform/modules/ssn_vault`.
+The database holds the ticket, the vault holds the coat. The app never
+keeps an SSN. `claimant` only ever has `ssn_token` (a random `tok_...`
+value) and `ssn_hmac` (a keyed hash, so duplicate checks and wage matching
+are a plain equals). The real number lives in `ssn_vault` (V10), encrypted
+with its own KMS key. Tickets are permanent identifiers on claimant rows.
+They don't expire, and the same SSN always gets the same ticket.
+
+The pieces:
+- `ssn_vault` table: the token, the HMAC, the KMS ciphertext and the ARN
+  of the key that made it. Only the `ssn_vault_rw` group can touch it,
+  and only to read and add rows. `app_user` has no grant on it, and the
+  db-logins task takes the broad grant back on every deploy.
+- KMS key, `alias/<name_prefix>-ssn` (for example
+  `alias/migdemo-testing-ssn`). Every call carries the encryption context
+  `{purpose: ssn, token: <token>}`, so a blob copied onto another row
+  won't decrypt.
+- HMAC pepper, a Secrets Manager secret at
+  `<name_prefix>/ssn/hmac-pepper`, encrypted with the same key. It keys
+  the blind lookup hash. Terraform makes the secret but never its value.
+- Audit trail: every reveal writes an `audit_event` row (`ssn.reveal`,
+  who, why, which token, never the SSN) in the same transaction as the
+  read and the decrypt. No audit row, no SSN.
+
+Endpoints:
+- `POST /ssn/tokenize` takes `{"ssn": "..."}` and returns the token and
+  HMAC. 201 the first time, 200 after that.
+- `POST /ssn/reveal` takes `{"token": "...", "reason": "..."}`, with the
+  actor from `X-Actor` for now. 401 with no actor, 400 with no reason,
+  404 for a token that is malformed or unknown.
+- Both answer 503 `ssn service unavailable` if anything below is missing
+  or failing, and never echo input. Responses are `no-store`.
+
+How the app finds its key, pepper and login:
+Nothing comes from the task definition. The first `/ssn` request works it
+out with the task role and caches it (a failure is retried after 30
+seconds):
+1. The environment name prefix comes from the ECS task metadata endpoint,
+   which Fargate gives every container. The app task family is
+   `<name_prefix>-app`, so the app drops the `-app`. `SSN_NAME_PREFIX`
+   overrides it for local runs.
+2. KMS `DescribeKey` on the alias gives the key ARN.
+3. Secrets Manager `GetSecretValue` reads the pepper.
+4. The database login is `ssn_vault_login`, a member of `ssn_vault_rw`.
+   It has no password. Each connection signs in with a 15 minute IAM auth
+   token the app makes locally from its task role.
+
+Grants:
+- IAM, on the app task role (`terraform/modules/ssn_vault`): KMS Encrypt
+  and Decrypt on the SSN key only with `purpose=ssn`; DescribeKey on that
+  key; GetSecretValue on the pepper secret only, plus Decrypt on the key
+  only through Secrets Manager; `rds-db:connect` as `ssn_vault_login` on
+  this cluster only.
+- Database (`db/logins/db-logins.sql`): `ssn_vault_login` can log in, has
+  `rds_iam`, and is in `ssn_vault_rw`. `ssn_vault_rw` gets SELECT and
+  INSERT on `ssn_vault` and INSERT on `audit_event`. No UPDATE or DELETE.
+
+Why it's built this way:
+The pipeline fails any plan that deletes or replaces a resource. Changing
+a task definition's environment variables or secrets makes Terraform
+replace it, so adding the key ARN or the pepper there stops the deploy.
+That happened once. Reading the key by its alias and the pepper by its
+name, and using IAM auth for the login, means this change only adds IAM
+statements and SQL. The task definitions stay as they are.
+
+Turning it on in an environment:
+1. Merge and let the deploy run. It adds the IAM statements and the login.
+2. Set the pepper once, out of band, as 64 hex characters (32 random
+   bytes). Never change it afterwards: a new pepper breaks every
+   `ssn_hmac` match.
+3. The next `/ssn` request picks it up within 30 seconds.
 
 Threat model, short version:
 - A leaked app login or a SQL injection in the main app can't read
@@ -97,14 +156,18 @@ Threat model, short version:
   the key only works with `purpose=ssn` in the encryption context.
 - The HMAC is keyed, so the nine-digit space can't be brute forced
   without the pepper secret.
-- Every reveal is attributable and has a reason. Logs mask anything
-  shaped like an SSN, and error responses never echo input.
+- The vault login has no password to leak. Signing in needs the task role.
+- Every reveal is attributable and has a reason. Logs never carry the
+  SSN, the token or the actor, and mask anything shaped like an SSN.
+
+Code: `app/src/demo_app/ssn/` (`config.py` is the startup lookup). Key,
+pepper secret and IAM: `terraform/modules/ssn_vault`.
 
 Not done yet:
 - Actor from the verified identity (ALB OIDC or Cognito) and a "may
   reveal" role check, instead of a header.
-- A token service DB login in `ssn_vault_rw`, and the pepper, KMS key
-  and that login injected as task secrets. Until then `/ssn` answers 503.
+- The token service runs inside the app task and uses its role. Its own
+  task and role would keep the key away from the rest of the app.
 - Rate limiting on reveal, two-person approval for bulk reveal.
-- A key rotation re-encrypt job (rows record their `key_id`).
+- A key rotation re-encrypt job (rows record their key ARN).
 - Claimant sign-up and the wage loader calling tokenize.

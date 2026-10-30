@@ -239,13 +239,15 @@ def test_http_reveal_audit_failure_is_503_without_ssn(client, store):
 
 
 def test_unconfigured_service_is_503(monkeypatch):
-    for var in ("SSN_KMS_KEY_ID", "SSN_HMAC_KEY", "SSN_DB_USER", "DB_HOST"):
+    # Outside ECS with no override, the name prefix is unknown: fail closed.
+    for var in ("SSN_NAME_PREFIX", "ECS_CONTAINER_METADATA_URI_V4"):
         monkeypatch.delenv(var, raising=False)
-    from demo_app.main import _build_ssn_service
+    from demo_app.main import _ssn_service
 
-    _build_ssn_service.cache_clear()
+    _ssn_service.reset()
     r = TestClient(app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
-    assert r.status_code == 503
+    _ssn_service.reset()
+    assert r.status_code == 503 and r.json() == {"detail": "ssn service unavailable"}
 
 
 def test_kms_encryptor_passes_key_and_context():

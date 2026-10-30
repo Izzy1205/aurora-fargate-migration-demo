@@ -64,7 +64,8 @@ def new_token() -> str:
 
 
 def load_pepper_from_env(var: str = "SSN_HMAC_KEY") -> bytes:
-    """Hex string, injected by ECS from Secrets Manager. Never in code."""
+    """Hex string from an env var. Local runs and tests only; in AWS the
+    pepper is read from Secrets Manager (see config.py). Never in code."""
     value = os.environ.get(var, "")
     try:
         pepper = bytes.fromhex(value)
