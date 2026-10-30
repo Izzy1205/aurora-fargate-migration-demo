@@ -82,8 +82,32 @@ The database holds the ticket, the vault holds the coat. The app never
 keeps an SSN. `claimant` only ever has `ssn_token` (a random `tok_...`
 value) and `ssn_hmac` (a keyed hash, so duplicate checks and wage matching
 are a plain equals). The real number lives in `ssn_vault` (V10), encrypted
-with its own KMS key. Tickets are permanent identifiers on claimant rows.
-They don't expire, and the same SSN always gets the same ticket.
+with its own KMS key. The `tok_` value is a permanent identifier on the
+claimant row, and the same SSN always gets the same one. It can't reveal
+anything. Reading the number takes a reveal ticket (`rtk_...`, V11), which
+is short-lived and works once.
+
+Reveal tickets:
+- Staff ask for a ticket for one claimant and one of their claims. The
+  claim must be open: `submitted`, `in_review` or `approved` (an approved
+  claim is still paying out). `denied` and `withdrawn` are closed.
+- A ticket dies at the first of: 72 hours after it was issued, its claim
+  closing, being used once, or being replaced by a refresh. The 72 hour cap
+  is also a CHECK on the table, so no code path can store a longer one.
+- Every time check uses the database clock, `now()`, not the app's.
+- Reveal marks the ticket used, writes the audit row and decrypts in one
+  transaction. If the audit insert or the decrypt fails, it all rolls back:
+  no SSN, and the ticket isn't burned.
+- Refresh is its own endpoint and needs a fresh sign-in (see below). Only
+  the person the ticket was issued to can refresh it. An expired ticket that
+  was never used can be refreshed; a used or replaced one can't, and
+  neither can one whose claim has closed. The old ticket is revoked and
+  points at its replacement, and the new one gets its own 72 hours.
+- Any rejected ticket (unknown, malformed, expired, used, replaced, claim
+  closed, someone else's) gets the same 404, so the answer doesn't tell a
+  caller which tickets exist. The log records only the category.
+- Audit rows point at a ticket by its id, never its value. `app_user` can
+  read `audit_event`, and the value is a bearer credential while it lives.
 
 The pieces:
 - `ssn_vault` table: the token, the HMAC, the KMS ciphertext and the ARN
@@ -97,20 +121,46 @@ The pieces:
 - HMAC pepper, a Secrets Manager secret at
   `<name_prefix>/ssn/hmac-pepper`, encrypted with the same key. It keys
   the blind lookup hash. Terraform makes the secret but never its value.
-- Audit trail: every reveal writes an `audit_event` row (`ssn.reveal`,
-  who, why, which token, never the SSN) in the same transaction as the
-  read and the decrypt. No audit row, no SSN.
+- `ssn_ticket` table: the ticket, which vault row and claim it's for, who
+  it was issued to, when it was issued, expires, was used or revoked, and
+  what replaced it. Only `ssn_vault_rw` can touch it. It can read and add
+  rows, and can only change `used_at`, `revoked_at` and `replaced_by`. No
+  foreign keys, same as `ssn_vault`, so the claim retention purge isn't
+  blocked by a login that can't delete tickets.
+- Audit trail: three actions, one row each, always who and why, never the
+  SSN or a ticket value. `ssn.ticket_issue` and `ssn.ticket_refresh`
+  (`record_type` `ssn_ticket`) and `ssn.reveal` (`record_type`
+  `ssn_vault`, with the ticket id and claim id). Each is written in the
+  same transaction as the change it records. No audit row, no change.
 
 Endpoints:
 - `POST /ssn/tokenize` takes `{"ssn": "..."}` and returns the token and
   HMAC. 201 the first time, 200 after that.
-- `POST /ssn/reveal` takes `{"token": "...", "reason": "..."}`, with the
-  actor from `X-Actor` for now. 401 with no actor, 400 with no reason,
-  404 for a token that is malformed or unknown.
+- `POST /ssn/tickets` takes `{"ssn_token": "...", "claim_id": 1,
+  "reason": "..."}` and returns `{ticket, claim_id, expires_at}` with 201.
+  401 with no actor, 400 with no reason, 404 when that token has no open
+  claim with that id.
+- `POST /ssn/reveal` takes `{"ticket": "...", "reason": "..."}` and
+  returns `{ssn_token, claim_id, ssn}` with 200. 401 with no actor, 400
+  with no reason, 404 for any ticket that isn't valid right now. It no
+  longer takes `{"token": ...}`; that body gets a 422.
+- `POST /ssn/tickets/refresh` takes `{"ticket": "...", "reason": "..."}`
+  and returns a new ticket with 201. 401 with no actor, 400 with no
+  reason, 401 `re-authentication required` without a fresh sign-in, 404
+  for a ticket that can't be refreshed.
+- The actor comes from `X-Actor` for now.
+- Re-auth is a placeholder: `X-Reauth-Actor` must match the actor and
+  `X-Reauth-At` (Unix seconds) must be under 5 minutes old. Anyone who can
+  set `X-Actor` can set these too, so it only shows where the check goes.
+  The real one is an identity provider step-up (OIDC `max_age` and
+  `auth_time`) behind the same `ReauthVerifier` interface in
+  `ssn/reauth.py`.
 - The WAF allows 10 reveals per minute from one IP and answers 429 after
-  that (`reveal_rate_limit` in `terraform/modules/waf`). It slows a script
-  walking tokens; the actor, reason and audit row are still the real gate.
-- Both answer 503 `ssn service unavailable` if anything below is missing
+  that (`reveal_rate_limit` in `terraform/modules/waf`). It matches paths
+  starting with `/ssn/reveal`, so the two ticket endpoints aren't limited
+  yet. It slows a script walking tickets; the actor, reason and audit row
+  are still the real gate.
+- All of them answer 503 `ssn service unavailable` if anything below is missing
   or failing, and never echo input. Responses are `no-store`.
 
 How the app finds its key, pepper and login:
@@ -135,7 +185,12 @@ Grants:
   this cluster only.
 - Database (`db/logins/db-logins.sql`): `ssn_vault_login` can log in, has
   `rds_iam`, and is in `ssn_vault_rw`. `ssn_vault_rw` gets SELECT and
-  INSERT on `ssn_vault` and INSERT on `audit_event`. No UPDATE or DELETE.
+  INSERT on `ssn_vault` and INSERT on `audit_event`. On `ssn_ticket` it
+  gets SELECT, INSERT, and UPDATE of `used_at`, `revoked_at` and
+  `replaced_by` only. To check a claim is open it can read `claim (id,
+  claimant_id, status)` and `claimant (id, ssn_token)`, no other columns.
+  No DELETE anywhere. The same grants are in V11, `afterMigrate.sql` and
+  `db-logins.sql`, and `app_user` loses its broad grant on `ssn_ticket`.
 - Permissions boundary (`terraform/modules/github_oidc/boundary.tf`, applied
   with bootstrap): every role the stack creates has this ceiling, so the
   task role's grants only work if the boundary allows them too. It allows
@@ -182,7 +237,10 @@ Threat model, short version:
   without the pepper secret.
 - The vault login has no password to leak. Signing in needs the task role.
 - Every reveal is attributable and has a reason. Logs never carry the
-  SSN, the token or the actor, and mask anything shaped like an SSN.
+  SSN, the token, a ticket or the actor, and mask anything shaped like an
+  SSN.
+- A leaked `tok_` value reveals nothing. A leaked ticket works once, for
+  at most 72 hours, and only while its claim is open.
 
 Code: `app/src/demo_app/ssn/` (`config.py` is the startup lookup). Key,
 pepper secret and IAM: `terraform/modules/ssn_vault`.
@@ -195,4 +253,12 @@ Not done yet:
 - A per-actor reveal limit in the app, and two-person approval for bulk
   reveal. The WAF only limits by IP.
 - A key rotation re-encrypt job (rows record their key ARN).
+- Real re-auth for refresh (identity provider step-up), replacing the
+  header placeholder.
+- Widen the WAF rule to `/ssn/tickets`. It's an in-place change to the
+  rule statement, so the deploy gate allows it, but it's Terraform and
+  left for its own change.
+- Store a hash of the ticket instead of the value, and maybe require the
+  same actor at reveal as at issue.
+- A job that deletes tickets that are long dead.
 - Claimant sign-up and the wage loader calling tokenize.

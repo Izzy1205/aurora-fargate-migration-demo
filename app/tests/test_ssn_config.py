@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from demo_app import main
 from demo_app.ssn import FakeEncryptor, KmsEncryptor, SsnTokenService
+from conftest import FakeVaultStore  # noqa: E402
 from demo_app.ssn.config import (
     CachedOnSuccess,
     SsnConfigError,
@@ -212,30 +213,8 @@ def test_cache_keeps_success_and_backs_off_on_failure():
 
 # end to end through the HTTP API with the real builder ------------------------
 
-class MemoryStore:
-    def __init__(self):
-        self.rows, self.audit = [], []
-
-    def find_by_hmac(self, h):
-        return next((r for r in self.rows if r.ssn_hmac == h), None)
-
-    def insert(self, row):
-        import dataclasses
-
-        if (found := self.find_by_hmac(row.ssn_hmac)) is not None:
-            return found
-        row = dataclasses.replace(row, id=len(self.rows) + 1)
-        self.rows.append(row)
-        return row
-
-    def reveal(self, token, audit, use):
-        row = next((r for r in self.rows if r.ssn_token == token), None)
-        if row is None:
-            return None
-        entry = audit(row)
-        value = use(row)
-        self.audit.append(entry)
-        return value
+def MemoryStore():  # noqa: N802 - kept as the name the tests below use
+    return FakeVaultStore()
 
 
 @pytest.fixture
@@ -272,9 +251,15 @@ def test_wired_tokenize_and_reveal(wired):
     token = r.json()["ssn_token"]
     assert seen["settings"].user == "ssn_vault_login" and seen["settings"].password == ""
     assert seen["provider"] is not None  # IAM auth token per connection
-    r = client.post("/ssn/reveal", json={"token": token, "reason": "case 1"}, headers={"X-Actor": "staff-1"})
+    store.add_claim(1, token)
+    r = client.post("/ssn/tickets", json={"ssn_token": token, "claim_id": 1, "reason": "case 1"},
+                    headers={"X-Actor": "staff-1"})
+    assert r.status_code == 201
+    ticket = r.json()["ticket"]
+    r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "case 1"}, headers={"X-Actor": "staff-1"})
     assert r.status_code == 200 and r.json()["ssn"] == "900000001"
-    assert len(store.audit) == 1 and store.audit[0].after_data == {"ssn_token": token}
+    assert [a.action for a in store.audit] == ["ssn.ticket_issue", "ssn.reveal"]
+    assert store.audit[1].after_data == {"ssn_token": token, "ticket_id": 1, "claim_id": 1}
     # Config was read once and cached: no more stubbed responses were used.
     assert client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).status_code == 200
 
@@ -293,7 +278,7 @@ def test_wired_missing_pepper_is_503_with_safe_log(wired, caplog):
 def test_wired_missing_key_is_503(wired):
     client, aws, _store, _seen = wired
     aws.kms_stub.add_client_error("describe_key", "NotFoundException", "not found")
-    r = client.post("/ssn/reveal", json={"token": "tok_" + "A" * 32, "reason": "x"}, headers={"X-Actor": "a"})
+    r = client.post("/ssn/reveal", json={"ticket": "rtk_" + "A" * 32, "reason": "x"}, headers={"X-Actor": "a"})
     assert r.status_code == 503
 
 
@@ -311,11 +296,15 @@ def test_kms_failure_on_reveal_is_503_and_rolls_back(monkeypatch):
     try:
         client = TestClient(main.app)
         token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
-        r = client.post("/ssn/reveal", json={"token": token, "reason": "x"}, headers={"X-Actor": "a"})
+        store.add_claim(1, token)
+        ticket = svc.issue_ticket(token, 1, actor="a", reason="x").ticket
+        r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "x"}, headers={"X-Actor": "a"})
     finally:
         main.app.dependency_overrides.clear()
     assert r.status_code == 503 and "900" not in r.text
-    assert store.audit == []
+    # Only the issue line landed; the ticket is still unused.
+    assert [a.action for a in store.audit] == ["ssn.ticket_issue"]
+    assert store.ticket(ticket)["used_at"] is None
 
 
 def test_kms_failure_on_tokenize_is_503(monkeypatch):
@@ -337,13 +326,12 @@ def test_malformed_and_unknown_tickets(wired):
     aws.key_ok()
     aws.pepper()
     h = {"X-Actor": "staff-1"}
-    # Tickets are permanent identifiers stored on claimant rows; there is no
-    # expiry. A ticket is either well formed and known, or it is refused.
-    for bad in ("", "tok_short", "900-00-0001", "tok_" + "!" * 32):
-        r = client.post("/ssn/reveal", json={"token": bad, "reason": "x"}, headers=h)
+    # Reveal takes a short-lived ticket, never the permanent tok_ value.
+    # Malformed, unknown and permanent tokens all get the same 404.
+    for bad in ("", "rtk_short", "900-00-0001", "rtk_" + "!" * 32, "tok_" + "B" * 32, "rtk_" + "B" * 32):
+        r = client.post("/ssn/reveal", json={"ticket": bad, "reason": "x"}, headers=h)
         assert r.status_code == 404 and "900" not in r.text
-    r = client.post("/ssn/reveal", json={"token": "tok_" + "B" * 32, "reason": "x"}, headers=h)
-    assert r.status_code == 404
+        assert r.json() == {"detail": "ticket not found or no longer valid"}
 
 
 def test_boto3_client_fails_fast():
