@@ -53,3 +53,24 @@ BEGIN
     GRANT INSERT ON public.audit_event TO ssn_vault_rw;
   END IF;
 END $$;
+
+-- Reveal tickets (V11), same rule as the vault. ssn_vault_rw can burn or
+-- replace a ticket through three columns only, and can see just enough of
+-- claim and claimant to check the claim is open and matches the SSN.
+DO $$
+BEGIN
+  IF to_regclass('public.ssn_ticket') IS NULL THEN
+    RETURN;
+  END IF;
+  REVOKE ALL ON public.ssn_ticket FROM PUBLIC;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
+    REVOKE ALL ON public.ssn_ticket FROM app_user;
+    REVOKE ALL ON SEQUENCE public.ssn_ticket_id_seq FROM app_user;
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_rw') THEN
+    GRANT SELECT, INSERT ON public.ssn_ticket TO ssn_vault_rw;
+    GRANT UPDATE (used_at, revoked_at, replaced_by) ON public.ssn_ticket TO ssn_vault_rw;
+    GRANT SELECT (id, claimant_id, status) ON public.claim TO ssn_vault_rw;
+    GRANT SELECT (id, ssn_token) ON public.claimant TO ssn_vault_rw;
+  END IF;
+END $$;

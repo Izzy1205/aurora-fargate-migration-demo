@@ -113,3 +113,21 @@ SELECT 'GRANT SELECT, INSERT ON public.ssn_vault TO ssn_vault_rw'
 WHERE to_regclass('public.ssn_vault') IS NOT NULL \gexec
 SELECT 'GRANT INSERT ON public.audit_event TO ssn_vault_rw'
 WHERE to_regclass('public.audit_event') IS NOT NULL \gexec
+
+-- Reveal tickets (V11) get the same treatment as the vault: app_user's
+-- broad grant is taken back in the same run, and the token service gets
+-- only what it needs. afterMigrate.sql repeats this as the backstop.
+SELECT format('REVOKE ALL ON public.ssn_ticket FROM %I', :'app_user')
+WHERE to_regclass('public.ssn_ticket') IS NOT NULL \gexec
+SELECT format('REVOKE ALL ON SEQUENCE public.ssn_ticket_id_seq FROM %I', :'app_user')
+WHERE to_regclass('public.ssn_ticket_id_seq') IS NOT NULL \gexec
+SELECT 'REVOKE ALL ON public.ssn_ticket FROM PUBLIC'
+WHERE to_regclass('public.ssn_ticket') IS NOT NULL \gexec
+SELECT 'GRANT SELECT, INSERT ON public.ssn_ticket TO ssn_vault_rw'
+WHERE to_regclass('public.ssn_ticket') IS NOT NULL \gexec
+SELECT 'GRANT UPDATE (used_at, revoked_at, replaced_by) ON public.ssn_ticket TO ssn_vault_rw'
+WHERE to_regclass('public.ssn_ticket') IS NOT NULL \gexec
+SELECT 'GRANT SELECT (id, claimant_id, status) ON public.claim TO ssn_vault_rw'
+WHERE to_regclass('public.claim') IS NOT NULL \gexec
+SELECT 'GRANT SELECT (id, ssn_token) ON public.claimant TO ssn_vault_rw'
+WHERE to_regclass('public.claimant') IS NOT NULL \gexec
