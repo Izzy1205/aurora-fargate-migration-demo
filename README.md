@@ -133,6 +133,14 @@ Grants:
 - Database (`db/logins/db-logins.sql`): `ssn_vault_login` can log in, has
   `rds_iam`, and is in `ssn_vault_rw`. `ssn_vault_rw` gets SELECT and
   INSERT on `ssn_vault` and INSERT on `audit_event`. No UPDATE or DELETE.
+- Permissions boundary (`terraform/modules/github_oidc/boundary.tf`, applied
+  with bootstrap): every role the stack creates has this ceiling, so the
+  task role's grants only work if the boundary allows them too. It allows
+  the same four things, matched by the key's alias, the `<name_prefix>/ssn/`
+  secret path and the `ssn_vault_login` username, because the key and the
+  cluster don't exist yet when bootstrap runs.
+- Network: the VPC has no NAT, so KMS needs its own interface endpoint
+  (`kms` in `interface_endpoints`). Secrets Manager already had one.
 
 Why it's built this way:
 The pipeline fails any plan that deletes or replaces a resource. Changing
@@ -143,11 +151,24 @@ name, and using IAM auth for the login, means this change only adds IAM
 statements and SQL. The task definitions stay as they are.
 
 Turning it on in an environment:
-1. Merge and let the deploy run. It adds the IAM statements and the login.
-2. Set the pepper once, out of band, as 64 hex characters (32 random
+1. Apply `terraform/bootstrap` so the boundary has the SSN statements.
+   CI never applies bootstrap.
+2. Merge and let the deploy run. It adds the KMS endpoint, the IAM
+   statements and the login.
+3. Set the pepper once, out of band, as 64 hex characters (32 random
    bytes). Never change it afterwards: a new pepper breaks every
    `ssn_hmac` match.
-3. The next `/ssn` request picks it up within 30 seconds.
+   `aws secretsmanager put-secret-value --secret-id <name_prefix>/ssn/hmac-pepper --secret-string "$(openssl rand -hex 32)"`
+4. The next `/ssn` request picks it up within 30 seconds. Check it with a
+   fake SSN in the 9xx range (never a real one):
+   `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -d '{"ssn":"900-12-3456"}'`
+
+If it answers 503, the app log names the step that failed and nothing
+else, for example `KMS key lookup failed (AccessDeniedException)`. AWS
+calls give up after a 3 second connect or 5 second read, with one retry,
+so a missing route shows up as a quick 503 instead of a load balancer
+504. Bringing it up in testing hit both: a 504 from the missing KMS
+endpoint, then AccessDenied from the boundary. The two fixes are above.
 
 Threat model, short version:
 - A leaked app login or a SQL injection in the main app can't read
