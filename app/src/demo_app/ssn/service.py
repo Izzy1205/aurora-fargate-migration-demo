@@ -100,7 +100,8 @@ class SsnTokenService:
             VaultRow(id=0, ssn_token=token, ssn_hmac=digest, ssn_ciphertext=blob, key_id=self._enc.key_id)
         )
         created = row.ssn_token == token
-        log.info("ssn tokenized token=%s created=%s", row.ssn_token, created)
+        # No token or SSN in logs; the vault row and audit_event are the record.
+        log.info("ssn tokenized created=%s", created)
         return TokenizeResult(row.ssn_token, row.ssn_hmac, created=created)
 
     def reveal(self, token: str, actor: str, reason: str) -> str:
@@ -130,5 +131,6 @@ class SsnTokenService:
         value = self._store.reveal(token, audit, decrypt)
         if value is None:
             raise TokenNotFound()
-        log.info("ssn revealed token=%s actor=%s", token, actor)
+        # The audit_event row holds who, why, and which token.
+        log.info("ssn revealed")
         return value
