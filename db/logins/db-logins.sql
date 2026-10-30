@@ -16,11 +16,16 @@ WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'migrator_user') \gexec
 SELECT format('CREATE ROLE %I', :'app_user')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app_user') \gexec
 -- Group role for the SSN token service. NOLOGIN: a login is granted
--- membership. TODO: add a token service login (its own secret in
--- modules/database/logins.tf, password set here) and GRANT ssn_vault_rw to
--- it. Until then nothing can log in with vault access.
+-- membership.
 SELECT 'CREATE ROLE ssn_vault_rw NOLOGIN'
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_rw') \gexec
+-- The token service's login. It has no password: it signs in with an IAM
+-- auth token (rds_iam), which the app mints with its task role. That keeps
+-- a password secret out of this task's definition, since adding one there
+-- would replace the Terraform-owned task definition. The name is fixed and
+-- matches vault_db_username in modules/ssn_vault.
+SELECT 'CREATE ROLE ssn_vault_login'
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_login') \gexec
 
 -- Set the passwords from the secrets every run, so bumping the secret
 -- version in Terraform and deploying is all a rotation takes.
@@ -28,6 +33,12 @@ ALTER ROLE :"migrator_user" WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD :'migrat
 ALTER ROLE :"app_user" WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD :'app_pw';
 \unset app_pw
 \unset migrator_pw
+-- PASSWORD NULL: password sign-in is impossible for the vault login.
+ALTER ROLE ssn_vault_login WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD NULL;
+GRANT ssn_vault_rw TO ssn_vault_login;
+-- rds_iam only exists on RDS and Aurora. Skipped on plain Postgres.
+SELECT 'GRANT rds_iam TO ssn_vault_login'
+WHERE EXISTS (SELECT FROM pg_roles WHERE rolname = 'rds_iam') \gexec
 
 -- On Aurora the master user is not a real superuser, so it has to be a
 -- member of migrator to hand tables to it and to set its default
@@ -36,11 +47,11 @@ SELECT format('GRANT %I TO %I WITH INHERIT TRUE, SET TRUE', :'migrator_user', cu
 WHERE NOT (pg_has_role(current_user, :'migrator_user', 'USAGE')
            AND pg_has_role(current_user, :'migrator_user', 'SET')) \gexec
 
-SELECT format('GRANT CONNECT ON DATABASE %I TO %I, %I', current_database(), :'migrator_user', :'app_user') \gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I, %I, ssn_vault_login', current_database(), :'migrator_user', :'app_user') \gexec
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO :"migrator_user";
-GRANT USAGE ON SCHEMA public TO :"app_user";
+GRANT USAGE ON SCHEMA public TO :"app_user", ssn_vault_rw;
 
 -- A stack built before this change has its tables, including Flyway's
 -- history table, owned by the master user. Hand those to migrator. Only
