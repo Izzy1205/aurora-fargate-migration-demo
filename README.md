@@ -228,6 +228,50 @@ so a missing route shows up as a quick 503 instead of a load balancer
 504. Bringing it up in testing hit both: a 504 from the missing KMS
 endpoint, then AccessDenied from the boundary. The two fixes are above.
 
+Try the ticket flow in testing:
+A ticket needs a claimant with an open claim, and nothing in the app
+makes those yet. `POST /demo/seed-claim` fills that gap in testing only.
+It takes the exact JSON `/ssn/tokenize` returns (`ssn_token` and
+`ssn_hmac`), needs `X-Actor`, and makes one fake employer, a fake claimant
+for that token and one `submitted` claim, then returns `claim_id`. 201 the
+first time, 200 with the same ids after that. It writes one
+`demo.seed_claim` audit row when it adds something.
+- It only answers when the environment name prefix ends in `-testing`. On
+  ECS that comes from the task family in the task metadata, and
+  `SSN_NAME_PREFIX` is ignored there, so no env var can turn it on in
+  stage or production. If the prefix can't be read, it's off. Off means
+  the same 404 as a path that doesn't exist, for every method and body.
+- It uses the app's own login (`app_user`), which already owns those
+  tables. `ssn_vault_login` gets no new grants, and nothing in Terraform
+  or the task definition changed.
+- Code: `app/src/demo_app/demo_seed.py`.
+
+In Git Bash, fake SSN only, all within 5 minutes for the refresh step
+(the re-auth headers must be under 5 minutes old):
+
+```bash
+ALB=http://<your-alb-dns-name>
+J="Content-Type: application/json"
+TOK=$(curl -s -X POST "$ALB/ssn/tokenize" -H "$J" -d '{"ssn":"900-12-3456"}'); echo "$TOK"
+SEED=$(curl -s -X POST "$ALB/demo/seed-claim" -H "$J" -H "X-Actor: izzy" -d "$TOK"); echo "$SEED"
+TOKEN=$(echo "$TOK" | sed -E 's/.*"ssn_token":"([^"]+)".*/\1/')
+CLAIM=$(echo "$SEED" | sed -E 's/.*"claim_id":([0-9]+).*/\1/')
+issue() { curl -s -X POST "$ALB/ssn/tickets" -H "$J" -H "X-Actor: izzy" -d "{\"ssn_token\":\"$TOKEN\",\"claim_id\":$CLAIM,\"reason\":\"demo\"}" | sed -E 's/.*"ticket":"([^"]+)".*/\1/'; }
+reveal() { curl -s -w " %{http_code}\n" -X POST "$ALB/ssn/reveal" -H "$J" -H "X-Actor: izzy" -d "{\"ticket\":\"$1\",\"reason\":\"demo\"}"; }
+T1=$(issue); echo "$T1"
+reveal "$T1"    # 200 with the SSN
+reveal "$T1"    # 404, the ticket is burned
+T2=$(issue); echo "$T2"
+NEW=$(curl -s -X POST "$ALB/ssn/tickets/refresh" -H "$J" -H "X-Actor: izzy" -H "X-Reauth-Actor: izzy" -H "X-Reauth-At: $(date +%s)" -d "{\"ticket\":\"$T2\",\"reason\":\"demo\"}"); echo "$NEW"
+T3=$(echo "$NEW" | sed -E 's/.*"ticket":"([^"]+)".*/\1/')
+reveal "$T2"    # 404, replaced by the refresh
+reveal "$T3"    # 200 with the SSN
+```
+
+Refresh works on a ticket that hasn't been used, so the flow issues a
+second ticket for it. A used ticket can't be refreshed. `X-Reauth-At` is
+Unix seconds from `date +%s`, and `X-Reauth-Actor` must match `X-Actor`.
+
 Threat model, short version:
 - A leaked app login or a SQL injection in the main app can't read
   `ssn_vault`: `app_user` has no grant on it.

@@ -9,6 +9,8 @@
 /ssn/tickets         POST, token and open claim in, one-use reveal ticket out
 /ssn/reveal          POST, ticket in, SSN out, burns the ticket, audited
 /ssn/tickets/refresh POST, ticket in, new ticket out, needs re-auth, audited
+/demo/seed-claim     POST, testing only: fake claimant and open claim for a
+                     token (see demo_seed.py). 404 in every other environment.
 """
 
 from __future__ import annotations
@@ -20,12 +22,21 @@ from functools import lru_cache
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .db import DbSettings, Repository
+from .demo_seed import (
+    PostgresSeedStore,
+    SeedConflict,
+    SeedInputError,
+    SeedStore,
+    TestingOnlyGuard,
+    check_seed_input,
+)
 from .presenters import present_customer, present_order
 from .ssn import (
     HeaderReauthVerifier,
@@ -131,7 +142,7 @@ Reauth = Annotated[ReauthVerifier, Depends(get_reauth_verifier)]
 async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     # FastAPI's default 422 echoes the bad input back. On /ssn that input
     # can be an SSN, so return a bare message instead.
-    if request.url.path.startswith("/ssn/"):
+    if request.url.path.startswith(("/ssn/", "/demo/")):
         return JSONResponse(status_code=422, content={"detail": "invalid request"})
     return await request_validation_exception_handler(request, exc)
 
@@ -292,6 +303,70 @@ def ssn_refresh_ticket(
     except Exception as exc:  # noqa: BLE001
         raise _ssn_failed("ticket refresh", exc) from exc
     return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
+
+
+@lru_cache(maxsize=1)
+def get_testing_guard() -> TestingOnlyGuard:
+    return TestingOnlyGuard()
+
+
+@lru_cache(maxsize=1)
+def get_seed_store() -> SeedStore:
+    # The app's own login (DB_USER), not the vault login.
+    return PostgresSeedStore(DbSettings.from_env())
+
+
+# Exactly what FastAPI answers for a route that doesn't exist, so outside
+# testing this endpoint can't be told apart from no endpoint at all.
+_NOT_FOUND = {"detail": "Not Found"}
+
+
+# Every method is routed here so that outside testing even a GET gets the
+# same 404 as an unknown path, not a 405 that would show the route exists.
+@app.api_route("/demo/seed-claim", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def demo_seed_claim(request: Request) -> JSONResponse:
+    # The guard runs before the body is read or validated, so a stage or
+    # production caller gets the plain 404 whatever they send. No
+    # dependencies on purpose: those resolve with the body.
+    guard = get_testing_guard()
+    if not await run_in_threadpool(guard.allowed):
+        return JSONResponse(_NOT_FOUND, status_code=404)
+    if request.method != "POST":
+        return JSONResponse({"detail": "Method Not Allowed"}, status_code=405, headers={"Allow": "POST"})
+    actor = (request.headers.get("x-actor") or "").strip()
+    if not actor:
+        return JSONResponse({"detail": "actor required"}, status_code=401, headers=NO_STORE)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - not JSON
+        return JSONResponse({"detail": "invalid request"}, status_code=422, headers=NO_STORE)
+    if not isinstance(body, dict):
+        return JSONResponse({"detail": "invalid request"}, status_code=422, headers=NO_STORE)
+    try:
+        ssn_token, ssn_hmac = check_seed_input(body.get("ssn_token"), body.get("ssn_hmac"))
+    except SeedInputError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400, headers=NO_STORE)
+    store = get_seed_store()
+    try:
+        result = await run_in_threadpool(store.seed_claim, ssn_token, ssn_hmac, actor)
+    except SeedConflict:
+        return JSONResponse(
+            {"detail": "that token or HMAC belongs to a different claimant"}, status_code=409, headers=NO_STORE
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("demo seed failed: %s", type(exc).__name__)
+        return JSONResponse({"detail": "database unavailable"}, status_code=503, headers=NO_STORE)
+    return JSONResponse(
+        {
+            "claimant_id": result.claimant_id,
+            "claim_id": result.claim_id,
+            "claim_status": result.claim_status,
+            "employer_id": result.employer_id,
+            "created": result.created,
+        },
+        status_code=201 if result.created else 200,
+        headers=NO_STORE,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
