@@ -72,11 +72,19 @@ resource "aws_iam_role_policy" "app_payment_queue" {
 # Aurora as ssn_vault_login with an IAM auth token, all with the task role.
 # Changing the task definition's env or secrets would replace it, and the
 # deploy delete gate blocks replaces.
+#
+# The cluster resource ID (for the rds-db:connect ARN) is read here, not passed
+# from the data layer as an output: a new output only exists in state after
+# the data layer is applied, so PR plans (which never apply) couldn't see it.
+data "aws_rds_cluster" "this" {
+  cluster_identifier = "${local.name_prefix}-aurora"
+}
+
 module "ssn_vault" {
   source = "../../modules/ssn_vault"
 
   name_prefix            = local.name_prefix
-  db_cluster_resource_id = var.db_cluster_resource_id
+  db_cluster_resource_id = data.aws_rds_cluster.this.cluster_resource_id
 }
 
 resource "aws_iam_role_policy" "app_ssn_vault" {

@@ -58,8 +58,3 @@ output "migrator_username" {
   description = "Postgres role Flyway logs in as."
   value       = var.migrator_username
 }
-
-output "cluster_resource_id" {
-  description = "Cluster resource ID (cluster-...), the part of an rds-db:connect ARN that names this cluster."
-  value       = aws_rds_cluster.this.cluster_resource_id
-}

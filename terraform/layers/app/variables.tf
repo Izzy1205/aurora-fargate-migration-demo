@@ -132,8 +132,3 @@ variable "payment_max_receive_count" {
   type        = number
   default     = 5
 }
-
-variable "db_cluster_resource_id" {
-  description = "Aurora cluster resource ID, scopes the token service's rds-db:connect."
-  type        = string
-}
