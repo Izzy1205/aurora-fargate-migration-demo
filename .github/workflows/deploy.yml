@@ -13,6 +13,11 @@ name: deploy
 # Teardowns are done by hand with scripts/teardown.sh.
 # The release job pushes the scanned images, sets up the DB logins, runs
 # Flyway as its own login, and rolls the service.
+# Images are pushed with the commit SHA tag (for humans) and every task
+# definition points at the image digest, repo@sha256:... (for deployment).
+# The digest is content-addressed, so a task can only ever run the exact
+# bytes Trivy scanned. Rollback: point the service at an earlier task
+# definition revision, which still holds its own digest.
 on:
   push:
     branches: [main]
@@ -44,6 +49,9 @@ env:
 jobs:
   # No credentials or OIDC token here, so a compromised scanner can't reach
   # AWS. A fixable CRITICAL fails the job and release never runs.
+  # The registry digest only exists after the push, which needs credentials,
+  # so this job records each scanned image's content ID and release checks
+  # the images it pushes still match before resolving their digests.
   scan:
     name: build and scan images
     runs-on: ubuntu-latest
@@ -51,6 +59,9 @@ jobs:
       contents: read
     env:
       TAG: ${{ github.sha }}
+    outputs:
+      app_image_id: ${{ steps.ids.outputs.app_image_id }}
+      migrate_image_id: ${{ steps.ids.outputs.migrate_image_id }}
     steps:
       - uses: actions/checkout@v7
 
@@ -79,6 +90,25 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: record scanned image IDs
+        id: ids
+        run: |
+          image_id() {
+            local id
+            id=$(docker image inspect --format '{{.Id}}' "$1")
+            if [[ ! "$id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "::error::unexpected image ID for $1: $id" >&2
+              return 1
+            fi
+            echo "$id"
+          }
+          app_id=$(image_id "demo-app:$TAG")
+          migrate_id=$(image_id "demo-migrate:$TAG")
+          {
+            echo "app_image_id=$app_id"
+            echo "migrate_image_id=$migrate_id"
+          } >> "$GITHUB_OUTPUT"
 
       - name: save scanned images
         run: docker save -o images.tar "demo-app:$TAG" "demo-migrate:$TAG"
@@ -322,68 +352,106 @@ jobs:
         with:
           name: images
 
+      # Pushes the SHA tag, then reads back the digest ECR stored for it.
+      # Everything after this step deploys by that digest.
       - name: push scanned images
+        id: push
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           APP_REPO: ${{ needs.outputs.outputs.app_repo }}
           MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          APP_IMAGE_ID: ${{ needs.scan.outputs.app_image_id }}
+          MIGRATE_IMAGE_ID: ${{ needs.scan.outputs.migrate_image_id }}
         run: |
           docker load -i images.tar
+          # The artifact must hold exactly the images the scan job scanned.
+          check_id() {
+            local local_image=$1 want=$2 got
+            got=$(docker image inspect --format '{{.Id}}' "$local_image:$TAG")
+            if [[ "$got" != "$want" ]]; then
+              echo "::error::$local_image:$TAG is $got but the scan job scanned $want" >&2
+              return 1
+            fi
+          }
+          check_id demo-app "$APP_IMAGE_ID"
+          check_id demo-migrate "$MIGRATE_IMAGE_ID"
+
           push_once() {
             local repo=$1 local_image=$2
-            # Tags are immutable, so a re-run of the same commit reuses the image.
+            # Tags are immutable, so a re-run of the same commit reuses the
+            # image that was scanned and pushed the first time.
             if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
-              echo "$repo:$TAG already exists, skipping push"
+              echo "::notice::$repo:$TAG already exists, skipping push and deploying its existing digest"
               return
             fi
             docker tag "$local_image:$TAG" "$REGISTRY/$repo:$TAG"
             docker push "$REGISTRY/$repo:$TAG"
           }
+          digest_of() {
+            local repo=$1 digest
+            digest=$(aws ecr describe-images --repository-name "$repo" \
+              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
+            if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "::error::bad digest for $repo:$TAG: $digest" >&2
+              return 1
+            fi
+            echo "$digest"
+          }
           push_once "$APP_REPO" demo-app
           push_once "$MIGRATION_REPO" demo-migrate
+          app_digest=$(digest_of "$APP_REPO")
+          migrate_digest=$(digest_of "$MIGRATION_REPO")
+          {
+            echo "app_digest=$app_digest"
+            echo "migrate_digest=$migrate_digest"
+            echo "app_image=$REGISTRY/$APP_REPO@$app_digest"
+            echo "migrate_image=$REGISTRY/$MIGRATION_REPO@$migrate_digest"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Images for ${TAG::7}"
+            echo "- app: \`$APP_REPO:$TAG\` = \`$app_digest\`"
+            echo "- migrate: \`$MIGRATION_REPO:$TAG\` = \`$migrate_digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Creates the app and Flyway logins, or resets their passwords to what
       # is in their secrets, and hands the tables to the Flyway login. Safe
       # to re-run. This is the only task that reads the master secret.
       - name: set up DB logins in the private subnets
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          MIGRATE_IMAGE: ${{ steps.push.outputs.migrate_image }}
           DB_LOGINS_FAMILY: ${{ needs.outputs.outputs.db_logins_family }}
           SUBNETS: ${{ needs.outputs.outputs.subnets }}
           SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
           LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
           CONTAINER: db-logins
         run: |
-          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$DB_LOGINS_FAMILY" db-logins "$REGISTRY/$MIGRATION_REPO:$TAG")
+          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$DB_LOGINS_FAMILY" db-logins "$MIGRATE_IMAGE" "$TAG")
           export TASK_DEFINITION
           bash scripts/run-migration.sh
 
       # Schema first. Expand-only, so the old code is fine with it.
       - name: run Flyway migration task in the private subnets
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          MIGRATE_IMAGE: ${{ steps.push.outputs.migrate_image }}
           MIGRATION_FAMILY: ${{ needs.outputs.outputs.migration_family }}
           SUBNETS: ${{ needs.outputs.outputs.subnets }}
           SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
           LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
         run: |
-          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$REGISTRY/$MIGRATION_REPO:$TAG")
+          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$MIGRATE_IMAGE" "$TAG")
           export TASK_DEFINITION
           bash scripts/run-migration.sh
 
       # Only reached if the migration exited 0.
       - name: deploy app
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          APP_REPO: ${{ needs.outputs.outputs.app_repo }}
+          APP_IMAGE: ${{ steps.push.outputs.app_image }}
           APP_FAMILY: ${{ needs.outputs.outputs.app_family }}
           APP_URL: ${{ needs.outputs.outputs.app_url }}
         run: |
-          task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$REGISTRY/$APP_REPO:$TAG")
+          task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$APP_IMAGE" "$TAG")
           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
             --task-definition "$task_def" --desired-count "$APP_DESIRED_COUNT" >/dev/null
-          echo "Waiting for $SERVICE to be stable on $task_def with $APP_DESIRED_COUNT tasks"
+          echo "Waiting for $SERVICE to be stable on $task_def ($APP_IMAGE) with $APP_DESIRED_COUNT tasks"
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
           echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"
