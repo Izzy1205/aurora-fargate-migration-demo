@@ -1,5 +1,5 @@
 output "kms_key_arn" {
-  description = "SSN vault key, passed to the app as SSN_KMS_KEY_ID."
+  description = "SSN vault key ARN. Not in the task definition yet (see layers/app/main.tf)."
   value       = aws_kms_key.ssn.arn
 }
 

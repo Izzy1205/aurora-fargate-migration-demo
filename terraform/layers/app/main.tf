@@ -48,7 +48,6 @@ module "ecs" {
 
   app_environment = [
     { name = "PAYMENT_QUEUE_URL", value = module.queue.queue_url },
-    { name = "SSN_KMS_KEY_ID", value = module.ssn_vault.kms_key_arn },
   ]
 }
 
@@ -67,10 +66,13 @@ resource "aws_iam_role_policy" "app_payment_queue" {
   policy = module.queue.task_policy_json
 }
 
-# Key and HMAC pepper for the SSN token service. TODO: inject the pepper and
-# a token service DB login as task secrets (modules/ecs secrets, plus
-# GetSecretValue and kms:Decrypt on the execution role). Until then the
-# /ssn endpoints answer 503.
+# Key and HMAC pepper for the SSN token service. TODO: inject the pepper, the
+# key ARN (SSN_KMS_KEY_ID) and a token service DB login into the app task in
+# one planned change (modules/ecs secrets, plus GetSecretValue on the
+# execution role). Any change to app_environment or secrets replaces the
+# Terraform-owned task definition, which the deploy delete gate blocks, so
+# that change needs its own PR and a deliberate replace. Until then the /ssn
+# endpoints answer 503.
 module "ssn_vault" {
   source = "../../modules/ssn_vault"
 
