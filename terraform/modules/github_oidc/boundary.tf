@@ -5,7 +5,7 @@
 # including all of IAM.
 #
 # This covers what the ECS execution roles, the flow logs role and the app
-# task role (payment queue) actually use. The migrate task role has no
+# task role (payment queue and SSN token service) actually use. The migrate task role has no
 # policies. If the main stack ever needs a role that does more, the boundary
 # has to grow here first, by hand, and bootstrap has to be applied again.
 data "aws_iam_policy_document" "workload_boundary" {
@@ -83,6 +83,49 @@ data "aws_iam_policy_document" "workload_boundary" {
       variable = "kms:ViaService"
       values   = ["sqs.${local.region}.amazonaws.com"]
     }
+  }
+  # The SSN token service (app task role for now). The key ARN and the
+  # Aurora cluster resource ID don't exist when bootstrap runs, so the key is
+  # matched by its alias and the DB login by its username.
+  statement {
+    sid       = "DescribeSsnKey"
+    actions   = ["kms:DescribeKey"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = ["alias/${local.p}-ssn"]
+    }
+  }
+
+  statement {
+    sid       = "UseSsnKeyWithPurpose"
+    actions   = ["kms:Encrypt", "kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = ["alias/${local.p}-ssn"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:purpose"
+      values   = ["ssn"]
+    }
+  }
+
+  # The HMAC pepper. Its KMS decrypt goes through Secrets Manager, which
+  # DecryptSecretViaSecretsManager above already covers.
+  statement {
+    sid       = "ReadSsnPepper"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:${local.part}:secretsmanager:${local.region}:${local.account}:secret:${local.p}/ssn/*"]
+  }
+
+  statement {
+    sid       = "SsnVaultDbLogin"
+    actions   = ["rds-db:connect"]
+    resources = ["arn:${local.part}:rds-db:${local.region}:${local.account}:dbuser:*/ssn_vault_login"]
   }
 }
 
