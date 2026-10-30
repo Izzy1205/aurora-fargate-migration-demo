@@ -43,6 +43,11 @@ output "workload_boundary_arn" {
   value       = module.github_oidc.workload_boundary_arn
 }
 
+output "vault_boundary_arn" {
+  description = "Boundary on the SSN token service roles only. The app layer builds this ARN itself."
+  value       = module.github_oidc.vault_boundary_arn
+}
+
 output "deploy_role_arn" {
   description = "GitHub variable AWS_DEPLOY_ROLE_ARN."
   value       = module.github_oidc.deploy_role_arn

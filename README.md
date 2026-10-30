@@ -199,6 +199,13 @@ Grants:
   the same four things, matched by the key's alias, the `<name_prefix>/ssn/`
   secret path and the `ssn_vault_login` username, because the key and the
   cluster don't exist yet when bootstrap runs.
+- Vault boundary (same file, `<name_prefix>-ssn-vault-boundary`): the
+  ceiling for the token service's own roles once it moves out of the app
+  task. Only roles named `<name_prefix>-ssn-vault-*` may carry it. It has
+  the same SSN statements (pepper secret by exact name), image pull and the
+  `/ecs/<name_prefix>/ssn-vault` log group, and nothing else. After the app
+  stops calling KMS itself, the SSN statements come out of the workload
+  boundary.
 - Network: the VPC has no NAT, so KMS needs its own interface endpoint
   (`kms` in `interface_endpoints`). Secrets Manager already had one.
 

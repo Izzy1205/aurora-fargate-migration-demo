@@ -14,7 +14,11 @@ locals {
   # modules/registry). They are built here so this stack does not depend on
   # the main stack's state.
   cluster_arn = "arn:${local.part}:ecs:${local.region}:${local.account}:cluster/${local.p}-cluster"
-  service_arn = "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.p}-cluster/${local.p}-app"
+  # The app service, and the SSN token service the app layer adds next.
+  service_arns = [
+    for s in ["app", "ssn-vault"] :
+    "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.p}-cluster/${local.p}-${s}"
+  ]
   runnable_taskdefs = [
     for f in ["migrate", "db-logins"] :
     "arn:${local.part}:ecs:${local.region}:${local.account}:task-definition/${local.p}-${f}:*"
@@ -27,6 +31,7 @@ locals {
       "app-execution", "app-task",
       "migrate-execution", "migrate-task",
       "db-logins-execution", "db-logins-task",
+      "ssn-vault-execution", "ssn-vault-task",
     ] :
     "arn:${local.part}:iam::${local.account}:role/${local.p}-${r}"
   ]
@@ -40,6 +45,11 @@ locals {
   # Roles the main stack creates. Each must carry the workload boundary
   # (boundary.tf), which the main stack finds by name.
   stack_roles = "arn:${local.part}:iam::${local.account}:role/${local.p}-*"
+
+  # The SSN token service's roles. Only these may carry the vault boundary.
+  vault_roles     = "arn:${local.part}:iam::${local.account}:role/${local.p}-ssn-vault-*"
+  vault_log_group = "arn:${local.part}:logs:${local.region}:${local.account}:log-group:/ecs/${local.p}/ssn-vault"
+  ssn_key_alias   = "alias/${local.p}-ssn"
 
   # Saved plans from deploy.yml, next to the state in the same bucket.
   plans_prefix = "arn:${local.part}:s3:::${var.state_bucket_name}/${var.plans_prefix}/*"

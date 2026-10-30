@@ -13,6 +13,11 @@ output "workload_boundary_arn" {
   value       = aws_iam_policy.workload_boundary.arn
 }
 
+output "vault_boundary_arn" {
+  description = "Permissions boundary for the SSN token service roles only."
+  value       = aws_iam_policy.vault_boundary.arn
+}
+
 output "deploy_role_arn" {
   description = "Set as GitHub variable AWS_DEPLOY_ROLE_ARN."
   value       = aws_iam_role.deploy.arn
