@@ -76,3 +76,35 @@ you mostly need:
   kept in Secrets Manager instead of in code
 
 The network, database, WAF, queue, alarms, and pipeline stay the same.
+8) SSN token service
+The database holds the ticket, the vault holds the coat. `claimant` only
+ever has `ssn_token` (a random `tok_...` value) and `ssn_hmac` (a keyed
+hash, so duplicate checks and wage matching are a plain equals). The real
+number lives in `ssn_vault` (V10), encrypted with its own KMS key.
+- `POST /ssn/tokenize` takes an SSN and returns the token and HMAC. Same
+  SSN, same token, every time.
+- `POST /ssn/reveal` takes a token and a reason, with the actor from
+  `X-Actor` for now. It reads the row, writes an `audit_event` row
+  (`ssn.reveal`, who, why, which token, never the SSN), and decrypts, all
+  in one transaction. No audit row, no SSN. Responses are `no-store`.
+- Code: `app/src/demo_app/ssn/`. Key and pepper secret:
+  `terraform/modules/ssn_vault`.
+
+Threat model, short version:
+- A leaked app login or a SQL injection in the main app can't read
+  `ssn_vault`: `app_user` has no grant on it.
+- A copied database dump has ciphertext only. It needs the KMS key, and
+  the key only works with `purpose=ssn` in the encryption context.
+- The HMAC is keyed, so the nine-digit space can't be brute forced
+  without the pepper secret.
+- Every reveal is attributable and has a reason. Logs mask anything
+  shaped like an SSN, and error responses never echo input.
+
+Not done yet:
+- Actor from the verified identity (ALB OIDC or Cognito) and a "may
+  reveal" role check, instead of a header.
+- A token service DB login in `ssn_vault_rw`, and the pepper, KMS key
+  and that login injected as task secrets. Until then `/ssn` answers 503.
+- Rate limiting on reveal, two-person approval for bulk reveal.
+- A key rotation re-encrypt job (rows record their `key_id`).
+- Claimant sign-up and the wage loader calling tokenize.
