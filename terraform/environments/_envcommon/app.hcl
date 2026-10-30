@@ -37,6 +37,7 @@ dependency "data" {
     migrator_secret_arn = "arn:aws:secretsmanager:us-east-2:000000000000:secret:migdemo-mock/db/migrator-000000"
     app_username        = "app_user"
     migrator_username   = "migrator"
+    cluster_resource_id = "cluster-MOCK0000000000000000000000"
   }
   mock_outputs_allowed_terraform_commands = local.mock_commands
 }
@@ -51,14 +52,15 @@ inputs = {
   app_security_group_id       = dependency.network.outputs.app_security_group_id
   migration_security_group_id = dependency.network.outputs.migration_security_group_id
 
-  db_host             = dependency.data.outputs.endpoint
-  db_port             = dependency.data.outputs.port
-  db_name             = dependency.data.outputs.db_name
-  master_secret_arn   = dependency.data.outputs.master_secret_arn
-  app_secret_arn      = dependency.data.outputs.app_secret_arn
-  migrator_secret_arn = dependency.data.outputs.migrator_secret_arn
-  app_username        = dependency.data.outputs.app_username
-  migrator_username   = dependency.data.outputs.migrator_username
+  db_host                = dependency.data.outputs.endpoint
+  db_port                = dependency.data.outputs.port
+  db_name                = dependency.data.outputs.db_name
+  master_secret_arn      = dependency.data.outputs.master_secret_arn
+  app_secret_arn         = dependency.data.outputs.app_secret_arn
+  migrator_secret_arn    = dependency.data.outputs.migrator_secret_arn
+  app_username           = dependency.data.outputs.app_username
+  migrator_username      = dependency.data.outputs.migrator_username
+  db_cluster_resource_id = dependency.data.outputs.cluster_resource_id
 
   app_desired_count = local.env.app_desired_count
   budget_limit_usd  = local.env.budget_limit_usd

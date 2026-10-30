@@ -8,6 +8,11 @@ output "hmac_pepper_secret_arn" {
   value       = aws_secretsmanager_secret.hmac_pepper.arn
 }
 
+output "vault_db_username" {
+  description = "Postgres login the token service signs in as with IAM auth."
+  value       = var.vault_db_username
+}
+
 output "task_policy_json" {
   description = "Policy for the token service task role."
   value       = data.aws_iam_policy_document.task.json

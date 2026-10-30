@@ -59,3 +59,8 @@ output "dr_backup_vault_arn" {
   description = "AWS Backup vault in the DR region, null when the copy is off."
   value       = module.backup.dr_vault_arn
 }
+
+output "cluster_resource_id" {
+  description = "Aurora cluster resource ID, for IAM database auth (rds-db:connect)."
+  value       = module.database.cluster_resource_id
+}
