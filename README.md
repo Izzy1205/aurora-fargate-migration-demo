@@ -156,10 +156,12 @@ Endpoints:
   `auth_time`) behind the same `ReauthVerifier` interface in
   `ssn/reauth.py`.
 - The WAF allows 10 reveals per minute from one IP and answers 429 after
-  that (`reveal_rate_limit` in `terraform/modules/waf`). It matches paths
-  starting with `/ssn/reveal`, so the two ticket endpoints aren't limited
-  yet. It slows a script walking tickets; the actor, reason and audit row
-  are still the real gate.
+  that (`reveal_rate_limit` in `terraform/modules/waf`, rule
+  `rate-limit-ssn-reveal`, paths starting with `/ssn/reveal`). The ticket
+  endpoints get their own 10 per minute per IP (`ticket_rate_limit`, rule
+  `rate-limit-ssn-tickets`, paths starting with `/ssn/tickets`, which
+  covers issue and refresh). They slow a script walking tickets; the
+  actor, reason and audit row are still the real gate.
 - All of them answer 503 `ssn service unavailable` if anything below is missing
   or failing, and never echo input. Responses are `no-store`.
 
@@ -299,9 +301,6 @@ Not done yet:
 - A key rotation re-encrypt job (rows record their key ARN).
 - Real re-auth for refresh (identity provider step-up), replacing the
   header placeholder.
-- Widen the WAF rule to `/ssn/tickets`. It's an in-place change to the
-  rule statement, so the deploy gate allows it, but it's Terraform and
-  left for its own change.
 - Store a hash of the ticket instead of the value, and maybe require the
   same actor at reveal as at issue.
 - A job that deletes tickets that are long dead.
