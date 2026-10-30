@@ -46,6 +46,30 @@ RUN set -eu \
  && echo "${GUAVA_SHA256}  $dir/guava-${GUAVA_VERSION}.jar" | sha256sum -c - \
  && find /flyway -name 'guava-*.jar'
 
+# OpenTelemetry swap (CVE-2026-118259, Medium).
+# Flyway 13.11.1 bundles opentelemetry-api 1.62.0 with its GCP Spanner
+# driver in /flyway/drivers/gcp. We never use Spanner, but Trivy scans the
+# whole image. The fix is in 1.67.0, so we swap the API jar and the context
+# jar it depends on (same version, per its POM), each checked by SHA-256
+# from Maven Central, the same way as Guava above.
+# Remove this block once a Flyway release ships opentelemetry-api 1.67.0 or
+# newer.
+ARG OTEL_VERSION=1.67.0
+ARG OTEL_API_SHA256=538d1dff2f9a37aecbc0ef98fd17273a3affb058e734e6763a3a07a38a5fdc59
+ARG OTEL_CONTEXT_SHA256=40fb813fb5e27ec2691daa29c81b572b5b1541ef9b41e62490c3ee3e6407c55e
+RUN set -eu \
+ && for pair in "api:${OTEL_API_SHA256}" "context:${OTEL_CONTEXT_SHA256}"; do \
+      name="opentelemetry-${pair%%:*}"; sum="${pair#*:}"; \
+      old="$(find /flyway -name "${name}-[0-9]*.jar")"; \
+      test -n "$old"; \
+      dir="$(dirname "$(echo "$old" | head -n 1)")"; \
+      rm -f $old; \
+      wget -q -O "$dir/${name}-${OTEL_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/io/opentelemetry/${name}/${OTEL_VERSION}/${name}-${OTEL_VERSION}.jar"; \
+      echo "${sum}  $dir/${name}-${OTEL_VERSION}.jar" | sha256sum -c -; \
+    done \
+ && find /flyway -name 'opentelemetry-api-*.jar' -o -name 'opentelemetry-context-*.jar'
+
 RUN addgroup -S migrate && adduser -S -G migrate -h /home/migrate migrate
 
 # Owned by root so the runtime user can read but not change them.

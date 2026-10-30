@@ -257,3 +257,86 @@ def test_raw_ssn_rejected_as_token(db):
         with pytest.raises(psycopg.errors.CheckViolation):
             c.execute("INSERT INTO ssn_vault (ssn_token, ssn_hmac, ssn_ciphertext, key_id) VALUES ('900-00-0001', %s, 'x', 'k')",
                       (bytes(32),))
+
+
+# --- testing-only claim seed (demo_seed.py), run as app_user -------------
+
+def _seed_store(conninfo):
+    from demo_app.demo_seed import PostgresSeedStore
+    s = DbSettings(host=conninfo.get("host", "localhost"), port=int(conninfo.get("port", 5432)),
+                   dbname=conninfo["dbname"], user="app_user", password="", sslmode="disable")
+    return PostgresSeedStore(s)
+
+
+def test_seed_claim_as_app_user_is_idempotent(db):
+    svc = _svc(db)
+    a = svc.tokenize("900-55-0001")
+    seed = _seed_store(db)
+    first = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
+    again = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
+    assert first.created is True and again.created is False
+    assert (again.claimant_id, again.claim_id, again.employer_id) == (first.claimant_id, first.claim_id, first.employer_id)
+    assert first.claim_status == "submitted"
+    with psycopg.connect(**db) as c:
+        assert c.execute("SELECT count(*) FROM claim WHERE claimant_id = %s", (first.claimant_id,)).fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM employer WHERE fein = '000000000'").fetchone()[0] == 1
+        rows = c.execute("SELECT actor, record_type, record_id, after_data::text FROM audit_event "
+                         "WHERE action = 'demo.seed_claim' AND record_id = %s", (first.claim_id,)).fetchall()
+    assert len(rows) == 1 and rows[0][:3] == ("izzy", "claim", first.claim_id)
+    assert a.ssn_token not in rows[0][3] and a.ssn_hmac.hex() not in rows[0][3]
+
+
+def test_seed_claim_reuses_an_open_claim_and_replaces_a_closed_one(db):
+    svc = _svc(db)
+    a = svc.tokenize("900-55-0002")
+    seed = _seed_store(db)
+    first = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
+    _close(db, first.claim_id)
+    second = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
+    assert second.created is True and second.claim_id != first.claim_id
+    assert second.claimant_id == first.claimant_id
+
+
+def test_seed_claim_refuses_a_mismatched_token_and_hmac(db):
+    from demo_app.demo_seed import SeedConflict
+    svc = _svc(db)
+    a = svc.tokenize("900-55-0003")
+    b = svc.tokenize("900-55-0004")
+    seed = _seed_store(db)
+    seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
+    with pytest.raises(SeedConflict):
+        seed.seed_claim(b.ssn_token, a.ssn_hmac, "izzy")  # a's HMAC under b's token
+    with pytest.raises(SeedConflict):
+        seed.seed_claim(a.ssn_token, b.ssn_hmac, "izzy")  # a's token with b's HMAC
+    with psycopg.connect(**db) as c:
+        assert c.execute("SELECT count(*) FROM claimant WHERE ssn_token = %s", (b.ssn_token,)).fetchone()[0] == 0
+
+
+def test_seeded_claim_runs_the_whole_ticket_flow(db):
+    """tokenize -> seed (app_user) -> issue -> reveal -> reveal again
+    refused -> issue -> refresh -> old ticket dead -> new ticket reveals."""
+    svc = _svc(db)
+    a = svc.tokenize("900-55-0005")
+    claim = _seed_store(db).seed_claim(a.ssn_token, a.ssn_hmac, "izzy").claim_id
+    t1 = svc.issue_ticket(a.ssn_token, claim, actor="izzy", reason="demo")
+    assert svc.reveal(t1.ticket, actor="izzy", reason="demo")[0] == "900550005"
+    with pytest.raises(TicketNotValid):
+        svc.reveal(t1.ticket, actor="izzy", reason="demo")
+    t2 = svc.issue_ticket(a.ssn_token, claim, actor="izzy", reason="demo")
+    t3 = svc.refresh(t2.ticket, actor="izzy", reason="demo")
+    with pytest.raises(TicketNotValid):
+        svc.reveal(t2.ticket, actor="izzy", reason="demo")
+    assert svc.reveal(t3.ticket, actor="izzy", reason="demo")[0] == "900550005"
+
+
+def test_seed_needs_no_new_grants(db):
+    # app_user still can't see the vault or tickets, and the vault login
+    # still can't write claimants or claims.
+    with psycopg.connect(**{**db, "user": "app_user"}) as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SELECT 1 FROM ssn_ticket")
+    for sql in ("INSERT INTO employer (fein, legal_name) VALUES ('000000001', 'x')",
+                "UPDATE claim SET status = 'submitted'"):
+        with psycopg.connect(**{**db, "user": "ssn_vault_login"}) as c:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(sql)
