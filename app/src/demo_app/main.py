@@ -5,8 +5,10 @@
 /orders  JSON, includes priority whether or not the V3 column exists
 /customers JSON
 /        small HTML page for the live demo
-/ssn/tokenize  POST, SSN in, token and HMAC out (see ssn/)
-/ssn/reveal    POST, token in, SSN out, needs actor and reason, audited
+/ssn/tokenize        POST, SSN in, token and HMAC out (see ssn/)
+/ssn/tickets         POST, token and open claim in, one-use reveal ticket out
+/ssn/reveal          POST, ticket in, SSN out, burns the ticket, audited
+/ssn/tickets/refresh POST, ticket in, new ticket out, needs re-auth, audited
 """
 
 from __future__ import annotations
@@ -21,17 +23,20 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .db import DbSettings, Repository
 from .presenters import present_customer, present_order
 from .ssn import (
+    HeaderReauthVerifier,
     InvalidSsn,
     KmsEncryptor,
+    NoOpenClaim,
     PostgresVaultStore,
+    ReauthVerifier,
     RevealNotAllowed,
     SsnTokenService,
-    TokenNotFound,
+    TicketNotValid,
     install_log_redaction,
 )
 from .ssn.config import (
@@ -112,6 +117,16 @@ def get_ssn_service() -> SsnTokenService:
 SsnService = Annotated[SsnTokenService, Depends(get_ssn_service)]
 
 
+@lru_cache(maxsize=1)
+def get_reauth_verifier() -> ReauthVerifier:
+    # PLACEHOLDER until a real IdP step-up (OIDC max_age / auth_time). See
+    # ssn/reauth.py.
+    return HeaderReauthVerifier()
+
+
+Reauth = Annotated[ReauthVerifier, Depends(get_reauth_verifier)]
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     # FastAPI's default 422 echoes the bad input back. On /ssn that input
@@ -162,12 +177,45 @@ class TokenizeRequest(BaseModel):
     ssn: str
 
 
+class IssueTicketRequest(BaseModel):
+    ssn_token: str
+    claim_id: int = Field(gt=0, le=2**63 - 1)  # claim.id is a bigint
+    reason: str | None = None
+
+
 class RevealRequest(BaseModel):
-    token: str
+    # A reveal ticket (rtk_...). The permanent ssn_token no longer works here.
+    ticket: str
+    reason: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    ticket: str
     reason: str | None = None
 
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+TICKET_GONE = "ticket not found or no longer valid"
+
+
+def _require_actor_and_reason(x_actor: str | None, reason: str | None) -> None:
+    # TODO: X-Actor is a demo stand-in. A real deployment takes the actor
+    # from the verified identity (ALB OIDC / Cognito claims), checks a
+    # "may reveal SSN" role, and never trusts a client-set header.
+    if not (x_actor or "").strip():
+        raise HTTPException(status_code=401, detail="actor required", headers=NO_STORE)
+    if not (reason or "").strip():
+        raise HTTPException(status_code=400, detail="reason required", headers=NO_STORE)
+
+
+def _ticket_body(t: Any) -> dict[str, Any]:
+    return {"ticket": t.ticket, "claim_id": t.claim_id, "expires_at": t.expires_at.isoformat()}
+
+
+def _ssn_failed(what: str, exc: Exception) -> HTTPException:
+    # No audit row, no SSN, no ticket change.
+    log.warning("ssn %s failed: %s", what, type(exc).__name__)
+    return HTTPException(status_code=503, detail="ssn service unavailable", headers=NO_STORE)
 
 
 @app.post("/ssn/tokenize")
@@ -187,29 +235,63 @@ def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
     )
 
 
+@app.post("/ssn/tickets")
+def ssn_issue_ticket(
+    body: IssueTicketRequest,
+    svc: SsnService,
+    x_actor: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    _require_actor_and_reason(x_actor, body.reason)
+    try:
+        t = svc.issue_ticket(body.ssn_token, body.claim_id, actor=x_actor or "", reason=body.reason or "")
+    except NoOpenClaim as exc:
+        raise HTTPException(status_code=404, detail="no open claim for this token", headers=NO_STORE) from exc
+    except RevealNotAllowed as exc:
+        raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _ssn_failed("ticket issue", exc) from exc
+    return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
+
+
 @app.post("/ssn/reveal")
 def ssn_reveal(
     body: RevealRequest,
     svc: SsnService,
     x_actor: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
-    # TODO: X-Actor is a demo stand-in. A real deployment takes the actor
-    # from the verified identity (ALB OIDC / Cognito claims), checks a
-    # "may reveal SSN" role, and never trusts a client-set header.
-    if not (x_actor or "").strip():
-        raise HTTPException(status_code=401, detail="actor required", headers=NO_STORE)
-    if not (body.reason or "").strip():
-        raise HTTPException(status_code=400, detail="reason required", headers=NO_STORE)
+    _require_actor_and_reason(x_actor, body.reason)
     try:
-        ssn = svc.reveal(body.token, actor=x_actor or "", reason=body.reason or "")
-    except TokenNotFound as exc:
-        raise HTTPException(status_code=404, detail="token not found", headers=NO_STORE) from exc
+        ssn, row, t = svc.reveal(body.ticket, actor=x_actor or "", reason=body.reason or "")
+    except TicketNotValid as exc:
+        # Unknown, expired, used, revoked and closed claim all look the same.
+        raise HTTPException(status_code=404, detail=TICKET_GONE, headers=NO_STORE) from exc
     except RevealNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
     except Exception as exc:  # noqa: BLE001 - no audit row, no SSN
-        log.warning("ssn reveal failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="ssn service unavailable", headers=NO_STORE) from exc
-    return JSONResponse({"ssn_token": body.token, "ssn": ssn}, headers=NO_STORE)
+        raise _ssn_failed("reveal", exc) from exc
+    return JSONResponse({"ssn_token": row.ssn_token, "claim_id": t.claim_id, "ssn": ssn}, headers=NO_STORE)
+
+
+@app.post("/ssn/tickets/refresh")
+def ssn_refresh_ticket(
+    body: RefreshRequest,
+    request: Request,
+    svc: SsnService,
+    reauth: Reauth,
+    x_actor: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    _require_actor_and_reason(x_actor, body.reason)
+    if not reauth.verify(x_actor or "", request.headers):
+        raise HTTPException(status_code=401, detail="re-authentication required", headers=NO_STORE)
+    try:
+        t = svc.refresh(body.ticket, actor=x_actor or "", reason=body.reason or "")
+    except TicketNotValid as exc:
+        raise HTTPException(status_code=404, detail=TICKET_GONE, headers=NO_STORE) from exc
+    except RevealNotAllowed as exc:
+        raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _ssn_failed("ticket refresh", exc) from exc
+    return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
 
 
 @app.get("/", response_class=HTMLResponse)
