@@ -5,6 +5,8 @@
 /orders  JSON, includes priority whether or not the V3 column exists
 /customers JSON
 /        small HTML page for the live demo
+/ssn/tokenize  POST, SSN in, token and HMAC out (see ssn/)
+/ssn/reveal    POST, token in, SSN out, needs actor and reason, audited
 """
 
 from __future__ import annotations
@@ -15,13 +17,27 @@ import os
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from .db import DbSettings, Repository
 from .presenters import present_customer, present_order
+from .ssn import (
+    InvalidSsn,
+    KmsEncryptor,
+    PostgresVaultStore,
+    RevealNotAllowed,
+    SsnTokenService,
+    TokenNotFound,
+    install_log_redaction,
+)
+from .ssn.service import load_pepper_from_env
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+install_log_redaction()
 log = logging.getLogger("demo_app")
 
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
@@ -42,6 +58,48 @@ def _db_unavailable(exc: Exception) -> HTTPException:
     # Log the detail, return a generic message. No hostnames or errors leak.
     log.warning("database call failed: %s", type(exc).__name__)
     return HTTPException(status_code=503, detail="database unavailable")
+
+
+@lru_cache(maxsize=1)
+def _build_ssn_service() -> SsnTokenService:
+    # The vault login is separate from the app login: a member of
+    # ssn_vault_rw, injected by ECS like DB_USER. TODO: wire SSN_DB_USER,
+    # SSN_DB_PASSWORD and SSN_HMAC_KEY as task secrets (see docs).
+    base = DbSettings.from_env()
+    settings = DbSettings(
+        host=base.host,
+        port=base.port,
+        dbname=base.dbname,
+        user=os.environ["SSN_DB_USER"],
+        password=os.environ["SSN_DB_PASSWORD"],
+        sslmode=base.sslmode,
+        connect_timeout=base.connect_timeout,
+    )
+    return SsnTokenService(
+        PostgresVaultStore(settings),
+        KmsEncryptor(os.environ["SSN_KMS_KEY_ID"]),
+        load_pepper_from_env(),
+    )
+
+
+def get_ssn_service() -> SsnTokenService:
+    try:
+        return _build_ssn_service()
+    except (KeyError, RuntimeError, ValueError) as exc:
+        log.warning("ssn token service not configured: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ssn service unavailable") from exc
+
+
+SsnService = Annotated[SsnTokenService, Depends(get_ssn_service)]
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's default 422 echoes the bad input back. On /ssn that input
+    # can be an SSN, so return a bare message instead.
+    if request.url.path.startswith("/ssn/"):
+        return JSONResponse(status_code=422, content={"detail": "invalid request"})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/health")
@@ -79,6 +137,60 @@ def customers(repo: Repo, limit: Limit = 20) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         raise _db_unavailable(exc) from exc
     return {"customers": [present_customer(r) for r in rows]}
+
+
+class TokenizeRequest(BaseModel):
+    ssn: str
+
+
+class RevealRequest(BaseModel):
+    token: str
+    reason: str | None = None
+
+
+NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@app.post("/ssn/tokenize")
+def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
+    # TODO: restrict to the sign-up and wage-loader callers (service auth),
+    # and rate limit. Tokenize never returns the SSN, but it is an oracle.
+    try:
+        result = svc.tokenize(body.ssn)
+    except InvalidSsn as exc:
+        raise HTTPException(status_code=400, detail="invalid SSN format") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _db_unavailable(exc) from exc
+    return JSONResponse(
+        {"ssn_token": result.ssn_token, "ssn_hmac": result.ssn_hmac.hex()},
+        status_code=201 if result.created else 200,
+        headers=NO_STORE,
+    )
+
+
+@app.post("/ssn/reveal")
+def ssn_reveal(
+    body: RevealRequest,
+    svc: SsnService,
+    x_actor: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    # TODO: X-Actor is a demo stand-in. A real deployment takes the actor
+    # from the verified identity (ALB OIDC / Cognito claims), checks a
+    # "may reveal SSN" role, and never trusts a client-set header.
+    if not (x_actor or "").strip():
+        raise HTTPException(status_code=401, detail="actor required", headers=NO_STORE)
+    if not (body.reason or "").strip():
+        raise HTTPException(status_code=400, detail="reason required", headers=NO_STORE)
+    try:
+        ssn = svc.reveal(body.token, actor=x_actor or "", reason=body.reason or "")
+    except TokenNotFound as exc:
+        raise HTTPException(status_code=404, detail="token not found", headers=NO_STORE) from exc
+    except RevealNotAllowed as exc:
+        raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
+    except Exception as exc:  # noqa: BLE001 - no audit row, no SSN
+        log.warning("ssn reveal failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ssn service unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"ssn_token": body.token, "ssn": ssn}, headers=NO_STORE)
 
 
 @app.get("/", response_class=HTMLResponse)
