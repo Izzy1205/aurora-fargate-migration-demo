@@ -1,72 +1,23 @@
 """SSN token service. Every SSN here uses the 9xx area, which is never
 issued, so none of them can be a real person's number."""
 
-import dataclasses
 import logging
 import re
 
 import pytest
 from fastapi.testclient import TestClient
 
-from demo_app.main import app, get_ssn_service
-from demo_app.ssn import FakeEncryptor, InvalidSsn, RevealNotAllowed, SsnTokenService, TokenNotFound
+from demo_app.main import app
+from demo_app.ssn import FakeEncryptor, InvalidSsn, RevealNotAllowed, TicketNotValid
 from demo_app.ssn.redact import RedactSsnFilter, redact
 from demo_app.ssn.service import TOKEN_RE, hmac_ssn, load_pepper_from_env, normalize_ssn
 
 FAKE_SSN = "900-00-0001"
 FAKE_DIGITS = "900000001"
 OTHER_SSN = "900-00-0002"
-PEPPER = bytes(range(32))  # test-only key
+from conftest import PEPPER  # noqa: E402 - shared test-only key
 # claimant.ssn_token's CHECK from V6, applied here the way Postgres would.
 CLAIMANT_CHECK = re.compile(r"^[0-9]{3}-?[0-9]{2}-?[0-9]{4}$")
-
-
-class FakeVaultStore:
-    """In memory, with the same all-or-nothing reveal as the Postgres store."""
-
-    def __init__(self):
-        self.rows = []
-        self.audit = []
-        self.fail_audit = False
-
-    def find_by_hmac(self, ssn_hmac):
-        return next((r for r in self.rows if r.ssn_hmac == ssn_hmac), None)
-
-    def insert(self, row):
-        existing = self.find_by_hmac(row.ssn_hmac)
-        if existing:
-            return existing
-        row = dataclasses.replace(row, id=len(self.rows) + 1)
-        self.rows.append(row)
-        return row
-
-    def reveal(self, token, audit, use):
-        row = next((r for r in self.rows if r.ssn_token == token), None)
-        if row is None:
-            return None
-        pending = audit(row)
-        if self.fail_audit:
-            raise RuntimeError("audit insert failed")
-        value = use(row)
-        self.audit.append(pending)  # commit
-        return value
-
-
-@pytest.fixture
-def store():
-    return FakeVaultStore()
-
-
-@pytest.fixture
-def svc(store):
-    return SsnTokenService(store, FakeEncryptor(), PEPPER)
-
-
-@pytest.fixture
-def client(svc):
-    app.dependency_overrides[get_ssn_service] = lambda: svc
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 def all_stored_bytes(store):
@@ -103,9 +54,9 @@ def test_hmac_is_keyed_sha256_of_digits(svc):
     assert result.ssn_hmac != hmac_ssn(bytes(32), FAKE_DIGITS)
 
 
-def test_raw_ssn_only_in_ciphertext(svc, store):
-    svc.tokenize(FAKE_SSN)
-    svc.reveal(store.rows[0].ssn_token, actor="staff-1", reason="identity check")
+def test_raw_ssn_only_in_ciphertext(svc, store, issue):
+    _, t = issue(FAKE_SSN)
+    svc.reveal(t.ticket, actor="staff-1", reason="identity check")
     for blob in all_stored_bytes(store):
         assert FAKE_DIGITS.encode() not in blob
         assert FAKE_SSN.encode() not in blob
@@ -127,37 +78,41 @@ def test_invalid_input_rejected_without_echo(bad):
     assert str(bad) not in str(exc.value) or not bad
 
 
-def test_reveal_needs_actor_and_reason(svc, store):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+def test_reveal_needs_actor_and_reason(svc, store, issue):
+    _, t = issue(FAKE_SSN)
+    issued = list(store.audit)
     for actor, reason in [("", "why"), ("staff-1", ""), ("staff-1", "   ")]:
         with pytest.raises(RevealNotAllowed):
-            svc.reveal(token, actor=actor, reason=reason)
-    assert store.audit == []
+            svc.reveal(t.ticket, actor=actor, reason=reason)
+    assert store.audit == issued
+    assert store.ticket(t.ticket)["used_at"] is None
 
 
-def test_reveal_writes_one_audit_row_without_ssn(svc, store):
-    token = svc.tokenize(FAKE_SSN).ssn_token
-    assert svc.reveal(token, actor="staff-1", reason="claimant called, verifying") == FAKE_DIGITS
-    assert len(store.audit) == 1
-    a = store.audit[0]
+def test_reveal_writes_one_audit_row_without_ssn(svc, store, issue):
+    token, t = issue(FAKE_SSN)
+    assert svc.reveal(t.ticket, actor="staff-1", reason="claimant called, verifying")[0] == FAKE_DIGITS
+    reveals = [a for a in store.audit if a.action == "ssn.reveal"]
+    assert len(reveals) == 1
+    a = reveals[0]
     assert (a.actor, a.action, a.reason, a.record_type) == ("staff-1", "ssn.reveal", "claimant called, verifying", "ssn_vault")
-    assert a.after_data == {"ssn_token": token}
-    assert FAKE_DIGITS not in repr(a)
+    assert a.after_data == {"ssn_token": token, "ticket_id": t.id, "claim_id": t.claim_id}
+    assert FAKE_DIGITS not in repr(a) and t.ticket not in repr(a)
 
 
-def test_failed_audit_returns_no_ssn(svc, store):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+def test_failed_audit_returns_no_ssn(svc, store, issue):
+    _, t = issue(FAKE_SSN)
+    issued = list(store.audit)
     store.fail_audit = True
     with pytest.raises(RuntimeError):
-        svc.reveal(token, actor="staff-1", reason="why")
-    assert store.audit == []
+        svc.reveal(t.ticket, actor="staff-1", reason="why")
+    assert store.audit == issued
 
 
-def test_unknown_token(svc):
-    with pytest.raises(TokenNotFound):
-        svc.reveal("tok_" + "A" * 32, actor="staff-1", reason="why")
-    with pytest.raises(TokenNotFound):
-        svc.reveal(FAKE_SSN, actor="staff-1", reason="why")
+def test_unknown_or_permanent_token_cannot_reveal(svc, issue):
+    token, _ = issue(FAKE_SSN)
+    for value in ("rtk_" + "A" * 32, token, FAKE_SSN, ""):
+        with pytest.raises(TicketNotValid):
+            svc.reveal(value, actor="staff-1", reason="why")
 
 
 def test_pepper_from_env(monkeypatch):
@@ -171,10 +126,10 @@ def test_pepper_from_env(monkeypatch):
         load_pepper_from_env()
 
 
-def test_ssn_never_in_logs(svc, caplog):
+def test_ssn_never_in_logs(svc, issue, caplog):
     caplog.set_level(logging.DEBUG)
-    token = svc.tokenize(FAKE_SSN).ssn_token
-    svc.reveal(token, actor="staff-1", reason="why")
+    _, t = issue(FAKE_SSN)
+    svc.reveal(t.ticket, actor="staff-1", reason="why")
     with pytest.raises(InvalidSsn):
         svc.tokenize("900-00-00019")
     assert caplog.records
@@ -213,29 +168,47 @@ def test_http_tokenize_bad_input_does_not_echo(client):
 
 def test_http_reveal_flow(client, store):
     token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
+    store.add_claim(7, token)
+    actor = {"X-Actor": "staff-1"}
 
-    r = client.post("/ssn/reveal", json={"token": token}, headers={"X-Actor": "staff-1"})
-    assert r.status_code == 400 and store.audit == []
+    r = client.post("/ssn/tickets", json={"ssn_token": token, "claim_id": 7, "reason": "verify identity"}, headers=actor)
+    assert r.status_code == 201 and r.headers["cache-control"] == "no-store"
+    ticket = r.json()["ticket"]
+    issued = len(store.audit)
+
+    r = client.post("/ssn/reveal", json={"ticket": ticket}, headers=actor)
+    assert r.status_code == 400 and len(store.audit) == issued
     assert r.headers["cache-control"] == "no-store"
 
-    r = client.post("/ssn/reveal", json={"token": token, "reason": "why"})
-    assert r.status_code == 401 and store.audit == []
+    r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "why"})
+    assert r.status_code == 401 and len(store.audit) == issued
 
-    r = client.post("/ssn/reveal", json={"token": "tok_" + "A" * 32, "reason": "why"}, headers={"X-Actor": "staff-1"})
-    assert r.status_code == 404 and store.audit == []
+    r = client.post("/ssn/reveal", json={"ticket": "rtk_" + "A" * 32, "reason": "why"}, headers=actor)
+    assert r.status_code == 404 and len(store.audit) == issued
 
-    r = client.post("/ssn/reveal", json={"token": token, "reason": "verify identity"}, headers={"X-Actor": "staff-1"})
+    # The permanent token is not a ticket any more.
+    r = client.post("/ssn/reveal", json={"ticket": token, "reason": "why"}, headers=actor)
+    assert r.status_code == 404 and len(store.audit) == issued
+
+    r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "verify identity"}, headers=actor)
     assert r.status_code == 200
-    assert r.json() == {"ssn_token": token, "ssn": FAKE_DIGITS}
+    assert r.json() == {"ssn_token": token, "claim_id": 7, "ssn": FAKE_DIGITS}
     assert r.headers["cache-control"] == "no-store"
-    assert len(store.audit) == 1 and store.audit[0].actor == "staff-1"
+    assert store.audit[-1].actor == "staff-1" and store.audit[-1].action == "ssn.reveal"
 
 
-def test_http_reveal_audit_failure_is_503_without_ssn(client, store):
-    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
+def test_http_old_reveal_body_is_rejected(client):
+    # Callers still sending {"token": ...} get a bare 422, nothing echoed.
+    r = client.post("/ssn/reveal", json={"token": "tok_" + "A" * 32, "reason": "why"}, headers={"X-Actor": "staff-1"})
+    assert r.status_code == 422 and r.json() == {"detail": "invalid request"}
+
+
+def test_http_reveal_audit_failure_is_503_without_ssn(client, store, issue):
+    _, t = issue(FAKE_SSN)
     store.fail_audit = True
-    r = client.post("/ssn/reveal", json={"token": token, "reason": "why"}, headers={"X-Actor": "staff-1"})
+    r = client.post("/ssn/reveal", json={"ticket": t.ticket, "reason": "why"}, headers={"X-Actor": "staff-1"})
     assert r.status_code == 503 and FAKE_DIGITS not in r.text
+    assert store.ticket(t.ticket)["used_at"] is None
 
 
 def test_unconfigured_service_is_503(monkeypatch):
