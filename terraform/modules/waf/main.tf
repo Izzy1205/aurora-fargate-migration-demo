@@ -1,6 +1,6 @@
 # Regional WAF in front of the ALB. Default allow, then AWS managed rule
-# groups and per-IP rate limits (a tight one on /ssn/reveal) decide what
-# gets blocked.
+# groups and per-IP rate limits (tight ones on /ssn/reveal and
+# /ssn/tickets) decide what gets blocked.
 #
 # ALB health checks to /health go straight from the ALB nodes to the
 # targets. They never pass through the web ACL, so no rule here can mark a
@@ -112,6 +112,60 @@ resource "aws_wafv2_web_acl" "this" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name_prefix}-rate-limit-ssn-reveal"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Issuing and refreshing tickets is the step before a reveal, so it gets
+  # the same tight per-IP cap. STARTS_WITH /ssn/tickets covers both
+  # POST /ssn/tickets and POST /ssn/tickets/refresh. Same 429 and the same
+  # count_only behaviour as the reveal rule.
+  rule {
+    name     = "rate-limit-ssn-tickets"
+    priority = 16
+
+    action {
+      dynamic "block" {
+        for_each = local.rate_action == "block" ? [1] : []
+        content {
+          custom_response {
+            response_code = 429
+          }
+        }
+      }
+      dynamic "count" {
+        for_each = local.rate_action == "count" ? [1] : []
+        content {}
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = var.ticket_rate_limit
+        evaluation_window_sec = 60
+        aggregate_key_type    = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/ssn/tickets"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-rate-limit-ssn-tickets"
       sampled_requests_enabled   = true
     }
   }
