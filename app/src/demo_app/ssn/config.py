@@ -170,10 +170,24 @@ def read_pepper(secrets: Any, secret_id: str) -> bytes:
 ClientFactory = Callable[[str, str], Any]
 
 
+# Short timeouts and one retry: with no NAT, a service that has no VPC
+# endpoint hangs until the ALB gives up (504). Fail fast instead, so /ssn
+# answers 503 and the log names the step.
+AWS_CONNECT_TIMEOUT = 3
+AWS_READ_TIMEOUT = 5
+AWS_MAX_ATTEMPTS = 2  # first try plus one retry
+
+
 def boto3_client(service: str, region: str) -> Any:
     import boto3  # lazy, like KmsEncryptor
+    from botocore.config import Config
 
-    return boto3.session.Session(region_name=region).client(service)
+    cfg = Config(
+        connect_timeout=AWS_CONNECT_TIMEOUT,
+        read_timeout=AWS_READ_TIMEOUT,
+        retries={"total_max_attempts": AWS_MAX_ATTEMPTS, "mode": "standard"},
+    )
+    return boto3.session.Session(region_name=region).client(service, config=cfg)
 
 
 def load_runtime_config(

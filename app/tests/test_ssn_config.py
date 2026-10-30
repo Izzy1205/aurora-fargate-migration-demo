@@ -344,3 +344,12 @@ def test_malformed_and_unknown_tickets(wired):
         assert r.status_code == 404 and "900" not in r.text
     r = client.post("/ssn/reveal", json={"token": "tok_" + "B" * 32, "reason": "x"}, headers=h)
     assert r.status_code == 404
+
+
+def test_boto3_client_fails_fast():
+    from demo_app.ssn.config import boto3_client
+
+    c = boto3_client("kms", "us-east-2")
+    assert c.meta.config.connect_timeout <= 3
+    assert c.meta.config.read_timeout <= 5
+    assert c.meta.config.retries["total_max_attempts"] <= 2
