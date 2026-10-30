@@ -34,7 +34,13 @@ from .ssn import (
     TokenNotFound,
     install_log_redaction,
 )
-from .ssn.service import load_pepper_from_env
+from .ssn.config import (
+    CachedOnSuccess,
+    SsnConfigError,
+    boto3_client,
+    iam_auth_password,
+    load_runtime_config,
+)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 install_log_redaction()
@@ -60,32 +66,45 @@ def _db_unavailable(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail="database unavailable")
 
 
-@lru_cache(maxsize=1)
 def _build_ssn_service() -> SsnTokenService:
-    # The vault login is separate from the app login: a member of
-    # ssn_vault_rw, injected by ECS like DB_USER. TODO: wire SSN_DB_USER,
-    # SSN_DB_PASSWORD and SSN_HMAC_KEY as task secrets (see docs).
-    base = DbSettings.from_env()
+    # Everything comes from AWS at runtime with the task role, nothing from
+    # the task definition (see ssn/config.py for why). The DB host, port and
+    # name are the app's own; only the login differs.
+    cfg = load_runtime_config()
+    host = os.environ["DB_HOST"]
+    port = int(os.environ.get("DB_PORT", "5432"))
+    local_password = os.environ.get("SSN_DB_PASSWORD", "")
     settings = DbSettings(
-        host=base.host,
-        port=base.port,
-        dbname=base.dbname,
-        user=os.environ["SSN_DB_USER"],
-        password=os.environ["SSN_DB_PASSWORD"],
-        sslmode=base.sslmode,
-        connect_timeout=base.connect_timeout,
+        host=host,
+        port=port,
+        dbname=os.environ["DB_NAME"],
+        user=cfg.db_user,
+        password=local_password,
+        sslmode=os.environ.get("DB_SSLMODE", "require"),
+        connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "20")),
     )
+    provider = None if local_password else iam_auth_password(
+        boto3_client("rds", cfg.region), host, port, cfg.db_user, cfg.region
+    )
+    log.info("ssn token service configured for %s", cfg.key_alias)
     return SsnTokenService(
-        PostgresVaultStore(settings),
-        KmsEncryptor(os.environ["SSN_KMS_KEY_ID"]),
-        load_pepper_from_env(),
+        PostgresVaultStore(settings, password_provider=provider),
+        KmsEncryptor(cfg.key_arn, client=boto3_client("kms", cfg.region)),
+        cfg.pepper,
     )
+
+
+_ssn_service = CachedOnSuccess(_build_ssn_service)
 
 
 def get_ssn_service() -> SsnTokenService:
     try:
-        return _build_ssn_service()
-    except (KeyError, RuntimeError, ValueError) as exc:
+        return _ssn_service.get()
+    except SsnConfigError as exc:
+        # The message names the failed step only. No values, no ARNs.
+        log.warning("ssn token service not configured: %s", exc)
+        raise HTTPException(status_code=503, detail="ssn service unavailable") from exc
+    except Exception as exc:  # noqa: BLE001 - fail closed on anything
         log.warning("ssn token service not configured: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="ssn service unavailable") from exc
 
