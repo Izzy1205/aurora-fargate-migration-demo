@@ -29,6 +29,13 @@ resource "aws_service_discovery_service" "vault" {
 
   # ECS reports task health (the container health check) to Cloud Map.
   health_check_custom_config {}
+
+  # The AWS provider (6.x) doesn't read an empty health_check_custom_config
+  # back into state, so every plan after create wants to replace this
+  # service. AWS keeps the setting; ignore the phantom diff.
+  lifecycle {
+    ignore_changes = [health_check_custom_config]
+  }
 }
 
 resource "aws_security_group" "vault" {
