@@ -1,5 +1,5 @@
 # TODO: pin the base by digest (python:3.13-slim@sha256:...).
-FROM python:3.13-slim AS build
+FROM python:3.15-slim AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY requirements.txt .
@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN python -m venv /venv && /venv/bin/pip install --require-virtualenv -r requirements.txt \
  && /venv/bin/pip uninstall --yes pip
 
-FROM python:3.13-slim
+FROM python:3.15-slim
 ARG APP_VERSION=dev
 ENV PATH=/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
