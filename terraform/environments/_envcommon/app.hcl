@@ -60,8 +60,9 @@ inputs = {
   app_username        = dependency.data.outputs.app_username
   migrator_username   = dependency.data.outputs.migrator_username
 
-  app_desired_count = local.env.app_desired_count
-  budget_limit_usd  = local.env.budget_limit_usd
+  app_desired_count       = local.env.app_desired_count
+  ssn_vault_desired_count = local.env.ssn_vault_desired_count
+  budget_limit_usd        = local.env.budget_limit_usd
 
   waf_rate_limit = local.env.waf_rate_limit
   waf_count_only = local.env.waf_count_only

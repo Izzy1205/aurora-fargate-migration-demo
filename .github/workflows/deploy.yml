@@ -279,6 +279,10 @@ jobs:
       migration_log_group: ${{ steps.out.outputs.migration_log_group }}
       app_url: ${{ steps.out.outputs.app_url }}
       desired_count: ${{ steps.out.outputs.desired_count }}
+      vault_service: ${{ steps.out.outputs.vault_service }}
+      vault_family: ${{ steps.out.outputs.vault_family }}
+      vault_container: ${{ steps.out.outputs.vault_container }}
+      vault_desired_count: ${{ steps.out.outputs.vault_desired_count }}
     steps:
       - uses: actions/checkout@v7
 
@@ -315,6 +319,10 @@ jobs:
             echo "migration_log_group=$(o migration_log_group)"
             echo "app_url=$(o app_url)"
             echo "desired_count=$(o app_desired_count)"
+            echo "vault_service=$(o ssn_vault_service_name)"
+            echo "vault_family=$(o ssn_vault_task_family)"
+            echo "vault_container=$(o ssn_vault_container_name)"
+            echo "vault_desired_count=$(o ssn_vault_desired_count)"
           } >> "$GITHUB_OUTPUT"
 
   release:
@@ -455,3 +463,21 @@ jobs:
           echo "Waiting for $SERVICE to be stable on $task_def ($APP_IMAGE) with $APP_DESIRED_COUNT tasks"
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
           echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Same image as the app, started in SSN vault mode. Private subnets, no
+      # load balancer. Rolled after the app so a vault problem never blocks
+      # the app deploy.
+      - name: deploy SSN vault
+        env:
+          APP_IMAGE: ${{ steps.push.outputs.app_image }}
+          VAULT_SERVICE: ${{ needs.outputs.outputs.vault_service }}
+          VAULT_FAMILY: ${{ needs.outputs.outputs.vault_family }}
+          VAULT_CONTAINER: ${{ needs.outputs.outputs.vault_container }}
+          VAULT_DESIRED_COUNT: ${{ needs.outputs.outputs.vault_desired_count }}  # ssn_vault_desired_count in env.hcl
+        run: |
+          task_def=$(bash scripts/register-task-def.sh "$VAULT_FAMILY" "$VAULT_CONTAINER" "$APP_IMAGE" "$TAG")
+          aws ecs update-service --cluster "$CLUSTER" --service "$VAULT_SERVICE" \
+            --task-definition "$task_def" --desired-count "$VAULT_DESIRED_COUNT" >/dev/null
+          echo "Waiting for $VAULT_SERVICE to be stable on $task_def with $VAULT_DESIRED_COUNT tasks"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$VAULT_SERVICE"
+          echo "SSN vault deployed: $VAULT_SERVICE ($VAULT_DESIRED_COUNT tasks, private only)" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -96,6 +96,12 @@ def test_prefix_missing_or_invalid(env):
         resolve_name_prefix(env, meta)
 
 
+def test_prefix_from_vault_family():
+    # modules/ssn_vault_service: family = "<name_prefix>-ssn-vault".
+    prefix, _ = resolve_name_prefix(ECS_ENV, lambda _u: {"Family": "migdemo-testing-ssn-vault"})
+    assert prefix == "migdemo-testing"
+
+
 def test_prefix_rejects_other_family():
     with pytest.raises(SsnConfigError, match="-app"):
         resolve_name_prefix(ECS_ENV, lambda _u: {"Family": "migdemo-testing-migrate"})

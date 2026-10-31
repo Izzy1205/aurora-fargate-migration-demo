@@ -61,6 +61,41 @@ output "app_desired_count" {
   value       = var.app_desired_count
 }
 
+output "ssn_vault_service_name" {
+  description = "SSN vault ECS service name."
+  value       = module.ssn_vault_service.service_name
+}
+
+output "ssn_vault_task_family" {
+  description = "SSN vault task definition family."
+  value       = module.ssn_vault_service.task_family
+}
+
+output "ssn_vault_container_name" {
+  description = "Container in the SSN vault task definition that deploy.yml swaps the image of."
+  value       = module.ssn_vault_service.container_name
+}
+
+output "ssn_vault_desired_count" {
+  description = "SSN vault tasks to run after a release. Set per environment in env.hcl."
+  value       = var.ssn_vault_desired_count
+}
+
+output "ssn_vault_url" {
+  description = "Private URL of the SSN vault. Resolves only inside the VPC."
+  value       = module.ssn_vault_service.base_url
+}
+
+output "ssn_vault_log_group" {
+  description = "CloudWatch log group with the SSN vault output."
+  value       = module.ssn_vault_service.log_group_name
+}
+
+output "ssn_vault_security_group_id" {
+  description = "SSN vault task security group."
+  value       = module.ssn_vault_service.security_group_id
+}
+
 output "alb_arn_suffix" {
   description = "ALB ARN suffix. The observability unit uses it as an alarm dimension."
   value       = module.ecs.alb_arn_suffix

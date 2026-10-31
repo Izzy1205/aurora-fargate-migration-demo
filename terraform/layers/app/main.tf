@@ -11,6 +11,9 @@ locals {
   # Created by terraform/bootstrap. The terraform role can only create roles
   # that carry it, so every role in this stack gets it.
   permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${local.name_prefix}-workload-boundary"
+
+  # Also from terraform/bootstrap. Only the SSN vault roles may carry it.
+  vault_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${local.name_prefix}-ssn-vault-boundary"
 }
 
 module "registry" {
@@ -91,6 +94,45 @@ resource "aws_iam_role_policy" "app_ssn_vault" {
   name   = "ssn-vault"
   role   = module.ecs.app_task_role_name
   policy = module.ssn_vault.task_policy_json
+}
+
+# The token service as its own ECS service (same image, vault-only mode),
+# reachable only from the app tasks by private DNS. The app does not call it
+# yet and keeps its own SSN policy above; a later PR moves the app over.
+#
+# The endpoint and Aurora security groups are looked up by name, not passed
+# from the network unit: like the cluster above, a new network output would
+# only exist after the network unit is applied, so PR plans couldn't see it.
+data "aws_security_group" "endpoints" {
+  vpc_id = var.vpc_id
+  name   = "${local.name_prefix}-endpoints"
+}
+
+data "aws_security_group" "db" {
+  vpc_id = var.vpc_id
+  name   = "${local.name_prefix}-db"
+}
+
+module "ssn_vault_service" {
+  source = "../../modules/ssn_vault_service"
+
+  name_prefix                 = local.name_prefix
+  vpc_id                      = var.vpc_id
+  private_subnet_ids          = var.private_subnet_ids
+  cluster_arn                 = module.ecs.cluster_arn
+  app_security_group_id       = var.app_security_group_id
+  endpoints_security_group_id = data.aws_security_group.endpoints.id
+  db_security_group_id        = data.aws_security_group.db.id
+
+  permissions_boundary_arn = local.vault_boundary_arn
+  task_policy_json         = module.ssn_vault.task_policy_json
+
+  image          = "${module.registry.repository_urls["app"]}:${var.app_image_tag}"
+  repository_arn = module.registry.repository_arns["app"]
+
+  db_host = var.db_host
+  db_port = var.db_port
+  db_name = var.db_name
 }
 
 # Web ACL on the ALB. Lives in this unit so it's created and destroyed with
