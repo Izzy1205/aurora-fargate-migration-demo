@@ -3,13 +3,10 @@
 Nothing here comes from the task definition. Changing the task definition's
 environment or secrets makes Terraform replace it, and the deploy pipeline
 refuses any plan that deletes or replaces a resource. So the app works it
-out at runtime with its own task role:
+out at runtime with its own task role. Only the vault service imports this
+module; the app never does:
 
-1. name_prefix (for example migdemo-testing). SSN_NAME_PREFIX wins if set,
-   for local runs. Otherwise it comes from the ECS task metadata endpoint,
-   which Fargate gives every container as ECS_CONTAINER_METADATA_URI_V4:
-   the task family is "<name_prefix>-app" (modules/ecs) or, for the
-   vault-only service, "<name_prefix>-ssn-vault" (modules/ssn_vault_service).
+1. name_prefix (for example migdemo-testing), from ecs_task.py.
 2. The KMS key, by its fixed alias alias/<name_prefix>-ssn. DescribeKey
    turns that into the key ARN, which is what each vault row records.
 3. The HMAC pepper, from Secrets Manager at <name_prefix>/ssn/hmac-pepper.
@@ -24,34 +21,30 @@ code, never a secret value, key material or response body.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import threading
-import time
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Generic, Mapping, TypeVar
+from typing import Any, Callable, Mapping
 
+from ..ecs_task import (  # noqa: F401 - re-exported for the vault and tests
+    APP_FAMILY_SUFFIX,
+    FAMILY_SUFFIXES,
+    METADATA_ENV,
+    NAME_PREFIX_ENV,
+    VAULT_FAMILY_SUFFIX,
+    CachedOnSuccess,
+    ConfigError,
+    fetch_task_metadata,
+    resolve_name_prefix,
+)
 from .service import MIN_PEPPER_BYTES
 
-NAME_PREFIX_ENV = "SSN_NAME_PREFIX"
-METADATA_ENV = "ECS_CONTAINER_METADATA_URI_V4"
 VAULT_DB_USER = "ssn_vault_login"  # matches db-logins.sql and modules/ssn_vault
-APP_FAMILY_SUFFIX = "-app"  # modules/ecs: family = "${name_prefix}-app"
-VAULT_FAMILY_SUFFIX = "-ssn-vault"  # modules/ssn_vault_service
-FAMILY_SUFFIXES = (APP_FAMILY_SUFFIX, VAULT_FAMILY_SUFFIX)
 
-# Fargate's task metadata endpoint. Anything else is refused, so a bad env
-# value can't point the app at some other host.
-_METADATA_HOST = "169.254.170.2"
-_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$")
 _REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-[0-9]$")
 
-
-class SsnConfigError(RuntimeError):
-    """The token service can't start. The message is safe to log."""
+# The same exception as ecs_task's, so one except clause catches both.
+SsnConfigError = ConfigError
 
 
 @dataclass(frozen=True)
@@ -73,45 +66,6 @@ def key_alias(name_prefix: str) -> str:
 
 def pepper_secret_name(name_prefix: str) -> str:
     return f"{name_prefix}/ssn/hmac-pepper"
-
-
-def _check_prefix(prefix: str, source: str) -> str:
-    if not _PREFIX_RE.fullmatch(prefix):
-        raise SsnConfigError(f"name prefix from {source} is not a valid name")
-    return prefix
-
-
-def fetch_task_metadata(uri: str, timeout: float = 2.0) -> dict[str, Any]:
-    parsed = urllib.parse.urlparse(uri)
-    if parsed.scheme != "http" or parsed.hostname != _METADATA_HOST:
-        raise SsnConfigError("ECS metadata URI is not the Fargate metadata endpoint")
-    # Fixed scheme and host checked above, so B310's file:// concern can't apply.
-    with urllib.request.urlopen(uri.rstrip("/") + "/task", timeout=timeout) as resp:  # nosec B310
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def resolve_name_prefix(
-    env: Mapping[str, str],
-    metadata: Callable[[str], dict[str, Any]] = fetch_task_metadata,
-) -> tuple[str, dict[str, Any] | None]:
-    """Returns the name prefix and the task metadata, if it was read."""
-    override = env.get(NAME_PREFIX_ENV, "").strip()
-    if override:
-        return _check_prefix(override, NAME_PREFIX_ENV), None
-    uri = env.get(METADATA_ENV, "").strip()
-    if not uri:
-        raise SsnConfigError(f"name prefix unknown: neither {NAME_PREFIX_ENV} nor {METADATA_ENV} is set")
-    try:
-        meta = metadata(uri)
-    except SsnConfigError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - network, JSON, anything
-        raise SsnConfigError(f"ECS task metadata read failed ({type(exc).__name__})") from exc
-    family = str(meta.get("Family", ""))
-    for suffix in FAMILY_SUFFIXES:
-        if family.endswith(suffix):
-            return _check_prefix(family[: -len(suffix)], "the ECS task family"), meta
-    raise SsnConfigError("ECS task family does not end in -app or -ssn-vault")
 
 
 def resolve_region(env: Mapping[str, str], meta: dict[str, Any] | None) -> str:
@@ -221,39 +175,3 @@ def iam_auth_password(rds: Any, host: str, port: int, user: str, region: str) ->
         return str(rds.generate_db_auth_token(DBHostname=host, Port=port, DBUsername=user, Region=region))
 
     return token
-
-
-T = TypeVar("T")
-
-
-class CachedOnSuccess(Generic[T]):
-    """Builds once and keeps the result. A failure is remembered for
-    retry_after seconds, so a misconfigured task doesn't call AWS on every
-    request, then the next call tries again."""
-
-    def __init__(self, build: Callable[[], T], retry_after: float = 30.0, clock: Callable[[], float] = time.monotonic):
-        self._build = build
-        self._retry_after = retry_after
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._value: T | None = None
-        self._error: Exception | None = None
-        self._failed_at = 0.0
-
-    def get(self) -> T:
-        with self._lock:
-            if self._value is not None:
-                return self._value
-            if self._error is not None and self._clock() - self._failed_at < self._retry_after:
-                raise self._error
-            try:
-                self._value = self._build()
-            except Exception as exc:
-                self._error, self._failed_at = exc, self._clock()
-                raise
-            self._error = None
-            return self._value
-
-    def reset(self) -> None:
-        with self._lock:
-            self._value, self._error, self._failed_at = None, None, 0.0

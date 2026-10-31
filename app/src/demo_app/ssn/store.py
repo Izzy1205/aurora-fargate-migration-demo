@@ -11,12 +11,8 @@ from typing import Any, Callable, Protocol
 
 import psycopg
 
+from ..claims import OPEN_CLAIM_STATUSES  # noqa: F401 - re-exported
 from ..db import DbSettings
-
-# Claim statuses (V7) that count as open. denied and withdrawn are closed.
-# approved stays open: the claim is still being paid, and staff may need to
-# check identity on a payment.
-OPEN_CLAIM_STATUSES = ("submitted", "in_review", "approved")
 
 # Why a ticket was refused. Logged as a category only, never the ticket.
 REJECT_UNKNOWN = "unknown"

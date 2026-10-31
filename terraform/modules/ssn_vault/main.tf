@@ -49,11 +49,11 @@ resource "aws_secretsmanager_secret" "hmac_pepper" {
   recovery_window_in_days = var.secret_recovery_window_days
 }
 
-# What the token service needs at runtime, all read by the app with its task
-# role at startup or per request. No task definition env or secrets, because
-# changing those replaces the Terraform-owned task definition and the deploy
-# delete gate blocks that. layers/app attaches it to the app task role for
-# now. TODO: a dedicated token service task and role.
+# What the token service needs at runtime, all read by the vault service
+# (modules/ssn_vault_service) with its own task role at startup or per
+# request. No task definition env or secrets, because changing those
+# replaces the Terraform-owned task definition and the deploy delete gate
+# blocks that.
 data "aws_iam_policy_document" "task" {
   # Encrypt and decrypt the SSN itself, only with purpose=ssn in the
   # encryption context.
@@ -68,7 +68,7 @@ data "aws_iam_policy_document" "task" {
     }
   }
 
-  # The app finds the key by its alias and records the key ARN on each row.
+  # The vault finds the key by its alias and records the key ARN on each row.
   statement {
     sid       = "SsnKeyDescribe"
     actions   = ["kms:DescribeKey"]
@@ -101,5 +101,43 @@ data "aws_iam_policy_document" "task" {
     sid       = "VaultDbLogin"
     actions   = ["rds-db:connect"]
     resources = ["arn:${data.aws_partition.current.partition}:rds-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:dbuser:${var.db_cluster_resource_id}/${var.vault_db_username}"]
+  }
+}
+
+# For the app task role. The app only forwards /ssn to the vault service, so
+# it must never use the SSN key, read the pepper or sign in as the vault
+# login. Explicit denies, so no allow added later (role or boundary) can
+# give that back. Scoped to this key ARN, the <name_prefix>/ssn/ secret path
+# and the vault login, so nothing else the app uses is caught: its DB secrets
+# use the AWS managed key and other paths, the queue has its own key, and
+# its DB login is app_user.
+data "aws_iam_policy_document" "app_deny" {
+  statement {
+    sid    = "DenySsnKey"
+    effect = "Deny"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:DescribeKey",
+      "kms:GenerateDataKey*",
+    ]
+    resources = [aws_kms_key.ssn.arn]
+  }
+
+  statement {
+    sid       = "DenySsnSecrets"
+    effect    = "Deny"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name_prefix}/ssn/*"]
+  }
+
+  # Any cluster, not just this one: the app has no reason to be this login
+  # anywhere.
+  statement {
+    sid       = "DenyVaultDbLogin"
+    effect    = "Deny"
+    actions   = ["rds-db:connect"]
+    resources = ["arn:${data.aws_partition.current.partition}:rds-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.vault_db_username}"]
   }
 }

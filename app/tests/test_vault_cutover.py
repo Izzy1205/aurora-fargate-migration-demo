@@ -1,14 +1,16 @@
-"""The app's /ssn routes go to the SSN vault service and fall back to the
-in-process handlers only when the vault can't answer. Fake 9xx SSNs only.
+"""The app's /ssn routes only forward to the SSN vault service. When the
+vault can't answer, or answers 5xx, the app returns 503 and runs no SSN
+code of its own. Fake 9xx SSNs only.
 
-The fake vault below runs the real vault app (demo_app.vault) on the same
-in-memory store as the app's fallback, the way both share one database in
-AWS."""
+The fake vault below runs the real vault app (demo_app.vault) on an
+in-memory store."""
 
 import http.server
 import json
 import logging
 import socket
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -17,9 +19,9 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from demo_app import main, ssn_vault_client, vault
-from demo_app.main import get_reauth_verifier, get_ssn_service
+from demo_app import main, ssn_api, ssn_vault_client, vault
 from demo_app.ssn import HeaderReauthVerifier
+from demo_app.ssn_api import TICKET_GONE, get_reauth_verifier, get_ssn_service
 from demo_app.ssn_vault_client import (
     EVENT_LOGGER,
     VaultClient,
@@ -102,8 +104,17 @@ def fake_vault(svc, reauth_clock):
 
 
 @pytest.fixture
-def app_client(client, fake_vault):
-    return client
+def app_client(fake_vault):
+    # The app, not the vault: its /ssn routes forward to fake_vault.
+    return TestClient(main.app)
+
+
+UNAVAILABLE = {"detail": "ssn service unavailable"}
+
+
+def assert_unavailable(r):
+    assert r.status_code == 503 and r.json() == UNAVAILABLE
+    assert r.headers["cache-control"] == "no-store" and r.headers["pragma"] == "no-cache"
 
 
 def tokenize(c):
@@ -176,9 +187,9 @@ def test_full_flow_is_served_by_the_vault(app_client, fake_vault, store, events)
     assert r.headers["cache-control"] == "no-store"
     again = reveal(app_client, t)
     assert again.status_code == 404  # used ticket stays a 404
-    assert again.json() == {"detail": main.TICKET_GONE}
+    assert again.json() == {"detail": TICKET_GONE}
     assert [p for p, _ in fake_vault.calls] == ["/ssn/tokenize", "/ssn/tickets", "/ssn/reveal", "/ssn/reveal"]
-    assert events.docs("ssn_vault_fallback") == []
+    assert events.docs("ssn_vault_unavailable") == []
     assert [(d["route"], d["status"]) for d in events.docs("ssn_vault_call")] == [
         ("/ssn/tokenize", 201), ("/ssn/tickets", 201), ("/ssn/reveal", 200), ("/ssn/reveal", 404),
     ]
@@ -186,16 +197,16 @@ def test_full_flow_is_served_by_the_vault(app_client, fake_vault, store, events)
 
 
 @pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 422, 429])
-def test_vault_4xx_is_passed_through_never_retried_locally(app_client, fake_vault, store, events, code):
+def test_vault_4xx_is_passed_through(app_client, fake_vault, store, events, code):
     token = tokenize(app_client)
     t = ticket_for(app_client, store, token)
     fake_vault.mode = f"status:{code}"
     r = reveal(app_client, t)
     assert r.status_code == code
     assert r.json() == {"detail": f"vault {code}"}
-    assert reveals(store) == []  # the local path never ran
+    assert reveals(store) == []
     assert store.ticket(t)["used_at"] is None
-    assert events.docs("ssn_vault_fallback") == []
+    assert events.docs("ssn_vault_unavailable") == []
 
 
 def test_vault_validation_and_auth_errors_pass_through(app_client, fake_vault, events):
@@ -205,7 +216,7 @@ def test_vault_validation_and_auth_errors_pass_through(app_client, fake_vault, e
     r = app_client.post("/ssn/reveal", json={"ticket": "rtk_x", "reason": "r"})
     assert r.status_code == 401
     assert len(fake_vault.calls) == 3
-    assert events.docs("ssn_vault_fallback") == []
+    assert events.docs("ssn_vault_unavailable") == []
 
 
 def test_refresh_through_the_vault_forwards_reauth_headers(app_client, fake_vault, store, reauth_clock):
@@ -223,74 +234,131 @@ def test_refresh_through_the_vault_forwards_reauth_headers(app_client, fake_vaul
     assert "cookie" not in sent and "authorization" not in sent
 
 
-# --- fallback
+# --- vault unavailable: 503, no SSN code in the app
 
 
-def test_vault_5xx_falls_back_to_in_process(app_client, fake_vault, store, events):
+def test_vault_5xx_is_a_503(app_client, fake_vault, store, events):
     fake_vault.mode = "status:503"
     r = app_client.post("/ssn/tokenize", json={"ssn": SSN})
-    assert r.status_code == 201
-    assert store.rows and store.rows[0].ssn_token == r.json()["ssn_token"]
-    [fb] = events.docs("ssn_vault_fallback")
-    assert (fb["route"], fb["reason"], fb["vault_status"], fb["level"]) == ("/ssn/tokenize", "vault_5xx", 503, "WARN")
+    assert_unavailable(r)
+    assert store.rows == []  # nothing ran in the app
+    [ev] = events.docs("ssn_vault_unavailable")
+    assert (ev["route"], ev["reason"], ev["vault_status"], ev["level"]) == ("/ssn/tokenize", "vault_5xx", 503, "WARN")
+    assert ev["ssn_vault_unavailable"] == 1
 
 
-def test_connection_error_falls_back_and_serves_the_whole_flow(app_client, fake_vault, store, events):
+@pytest.mark.parametrize("code", [500, 502, 503, 504])
+def test_vault_5xx_body_is_not_passed_on(app_client, fake_vault, code):
+    fake_vault.mode = f"status:{code}"
+    r = app_client.post("/ssn/tokenize", json={"ssn": SSN})
+    assert_unavailable(r)
+    assert "vault" not in r.text
+
+
+@pytest.mark.parametrize("path", sorted(SSN_PATHS))
+def test_connection_error_is_a_503_on_every_route(app_client, fake_vault, store, events, path):
     fake_vault.mode = "down"
-    token = tokenize(app_client)
-    t = ticket_for(app_client, store, token)
-    r = reveal(app_client, t)
-    assert r.status_code == 200 and r.json()["ssn"] == "900123456"
-    assert reveal(app_client, t).status_code == 404
-    reasons = [(d["route"], d["reason"]) for d in events.docs("ssn_vault_fallback")]
-    assert reasons == [("/ssn/tokenize", "connect_error"), ("/ssn/tickets", "connect_error"),
-                       ("/ssn/reveal", "connect_error"), ("/ssn/reveal", "connect_error")]
-    assert len(reveals(store)) == 1
+    r = app_client.post(path, json={"ticket": "rtk_x", "ssn_token": "tok_x", "claim_id": 1, "ssn": SSN,
+                                    "reason": "r"}, headers=ACTOR)
+    assert_unavailable(r)
+    assert store.rows == [] and store.audit == []
+    [ev] = events.docs("ssn_vault_unavailable")
+    assert (ev["route"], ev["reason"], ev["error"]) == (path, "connect_error", "ConnectionRefusedError")
 
 
-def test_no_vault_url_falls_back(client, store, events):
-    assert client.post("/ssn/tokenize", json={"ssn": SSN}).status_code == 201
-    [fb] = events.docs("ssn_vault_fallback")
-    assert fb["reason"] == "no_vault_url" and fb["NamePrefix"] == "unknown"
+def test_no_vault_url_is_a_503(store, events):
+    # conftest's autouse fixture gives the app no vault client.
+    r = TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN})
+    assert_unavailable(r)
+    assert store.rows == []
+    [ev] = events.docs("ssn_vault_unavailable")
+    assert ev["reason"] == "no_vault_url" and ev["NamePrefix"] == "unknown"
 
 
 @pytest.mark.parametrize("mode", ["then_500", "then_drop"])
-def test_no_double_reveal_when_the_vault_burns_the_ticket_then_fails(app_client, fake_vault, store, events, mode):
+def test_vault_burns_the_ticket_then_fails_is_a_503_and_no_retry(app_client, fake_vault, store, events, mode):
     token = tokenize(app_client)
     t = ticket_for(app_client, store, token)
     fake_vault.mode = mode
     r = reveal(app_client, t)
-    # The vault revealed and burned the ticket; the caller never saw it. The
-    # fallback finds the ticket used: 404, no SSN, no second reveal.
-    assert r.status_code == 404
+    # The vault revealed and burned the ticket; the caller never saw it.
+    assert_unavailable(r)
     assert "900123456" not in r.text
     assert len(reveals(store)) == 1
-    assert len(events.docs("ssn_vault_fallback")) == 1
+    assert [p for p, _ in fake_vault.calls].count("/ssn/reveal") == 1  # not retried
     fake_vault.mode = "ok"
     assert reveal(app_client, t).status_code == 404
     assert len(reveals(store)) == 1
 
 
-def test_vault_failure_before_burning_leaves_the_ticket_for_the_fallback(app_client, fake_vault, store):
-    # For example the vault can't decrypt (KMS denied): its transaction rolls
-    # back, the ticket stays unused, and the fallback reveals it once.
-    token = tokenize(app_client)
-    t = ticket_for(app_client, store, token)
-    fake_vault.mode = "status:503"
-    assert reveal(app_client, t).json()["ssn"] == "900123456"
-    fake_vault.mode = "ok"
-    assert reveal(app_client, t).status_code == 404
-    assert len(reveals(store)) == 1
+def test_bad_json_on_the_app_is_forwarded_not_echoed(app_client, fake_vault):
+    # The app doesn't validate /ssn bodies any more; the vault does, with
+    # the same bare 422.
+    r = app_client.post("/ssn/tokenize", json={"ssn": [SSN]})
+    assert r.status_code == 422 and r.json() == {"detail": "invalid request"} and "900" not in r.text
+    assert len(fake_vault.calls) == 1
 
 
-def test_refresh_is_not_repeated_by_the_fallback(app_client, fake_vault, store, reauth_clock):
-    token = tokenize(app_client)
-    t = ticket_for(app_client, store, token)
-    headers = {**ACTOR, "X-Reauth-Actor": "staff-7", "X-Reauth-At": str(int(reauth_clock["now"]))}
-    fake_vault.mode = "then_500"
-    r = app_client.post("/ssn/tickets/refresh", json={"ticket": t, "reason": "again"}, headers=headers)
-    assert r.status_code == 404  # the vault already swapped it
-    assert len(store.tickets) == 2  # the original and the vault's one replacement
+# --- the app has no SSN code
+
+SSN_ONLY_MODULES = [
+    "demo_app.ssn_api",
+    "demo_app.ssn.config",
+    "demo_app.ssn.crypto",
+    "demo_app.ssn.service",
+    "demo_app.ssn.store",
+    "demo_app.ssn.reauth",
+    "boto3",
+    "botocore",
+]
+
+
+def _modules_after_import(module):
+    code = (
+        "import json, sys\n"
+        f"import {module}\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                         cwd=Path(__file__).resolve().parents[1])
+    return set(json.loads(out.stdout))
+
+
+def test_importing_the_app_loads_no_ssn_service_kms_or_pepper_code():
+    loaded = _modules_after_import("demo_app.main")
+    assert "demo_app.main" in loaded
+    assert not set(SSN_ONLY_MODULES) & loaded
+
+
+def test_the_vault_does_load_them():
+    # The check above means something: the vault entry point loads them.
+    loaded = _modules_after_import("demo_app.vault")
+    assert {"demo_app.ssn_api", "demo_app.ssn.config", "demo_app.ssn.service", "demo_app.ssn.store"} <= loaded
+    assert "demo_app.main" not in loaded
+
+
+def test_app_has_no_route_to_the_ssn_handlers():
+    handlers = {r.endpoint for r in ssn_api.ssn_router.routes if isinstance(r, APIRoute)}
+    assert len(handlers) == 4
+    for r in main.app.routes:
+        if isinstance(r, APIRoute):
+            assert r.endpoint not in handlers
+            assert r.endpoint.__module__ != "demo_app.ssn_api"
+            for dep in r.dependant.dependencies:
+                assert dep.call not in (ssn_api.get_ssn_service, ssn_api.get_reauth_verifier)
+    for name in ("get_ssn_service", "get_reauth_verifier", "local_ssn_app", "ssn_local", "add_ssn_routes"):
+        assert not hasattr(main, name)
+
+
+def test_overriding_the_ssn_service_on_the_app_changes_nothing(svc, store, events):
+    # Even if something wired the token service onto the app, its /ssn
+    # routes still only forward (here: no vault, so 503).
+    main.app.dependency_overrides[get_ssn_service] = lambda: svc
+    try:
+        assert_unavailable(TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN}))
+    finally:
+        main.app.dependency_overrides.pop(get_ssn_service, None)
+    assert store.rows == []
 
 
 # --- logs
@@ -303,22 +371,22 @@ def test_no_secrets_in_any_log_line(app_client, fake_vault, store, events, caplo
     headers = {**ACTOR, "X-Reauth-Actor": "staff-7", "X-Reauth-At": str(int(reauth_clock["now"]))}
     t2 = app_client.post("/ssn/tickets/refresh", json={"ticket": t, "reason": "x"}, headers=headers).json()["ticket"]
     fake_vault.mode = "down"
-    assert reveal(app_client, t2).status_code == 200
+    assert reveal(app_client, t2).status_code == 503
     fake_vault.mode = "then_500"
-    reveal(app_client, t2)
+    assert reveal(app_client, t2).status_code == 503
     text = "\n".join(events.lines + [r.getMessage() for r in caplog.records])
-    assert events.lines and events.docs("ssn_vault_fallback") and events.docs("ssn_vault_call")
+    assert events.lines and events.docs("ssn_vault_unavailable") and events.docs("ssn_vault_call")
     for secret in ["900123456", "900-12-3456", token, t, t2, "staff-7", PEPPER.hex(), str(int(reauth_clock["now"]))]:
         assert secret not in text
     for d in events.docs():
         assert set(d) <= {"_aws", "NamePrefix", "level", "event", "route", "status", "latency_ms", "reason",
-                          "vault_status", "error", "ssn_vault_call", "ssn_vault_latency_ms", "ssn_vault_fallback"}
+                          "vault_status", "error", "ssn_vault_call", "ssn_vault_latency_ms", "ssn_vault_unavailable"}
 
 
 def test_log_lines_are_cloudwatch_embedded_metrics(app_client, fake_vault, events):
     tokenize(app_client)
     fake_vault.mode = "down"
-    tokenize(app_client)
+    assert app_client.post("/ssn/tokenize", json={"ssn": SSN}).status_code == 503
     docs = [d for d in events.docs() if d["event"] != "ssn_vault_served"]
     for d in docs:
         [directive] = d["_aws"]["CloudWatchMetrics"]
@@ -327,7 +395,7 @@ def test_log_lines_are_cloudwatch_embedded_metrics(app_client, fake_vault, event
         for m in directive["Metrics"]:
             assert isinstance(d[m["Name"]], (int, float))
         assert d["NamePrefix"] == "migdemo-testing"
-    assert {d["event"] for d in docs} == {"ssn_vault_call", "ssn_vault_fallback"}
+    assert {d["event"] for d in docs} == {"ssn_vault_call", "ssn_vault_unavailable"}
 
 
 def test_vault_logs_route_status_and_latency_only(svc, events):

@@ -69,12 +69,13 @@ resource "aws_iam_role_policy" "app_payment_queue" {
   policy = module.queue.task_policy_json
 }
 
-# Key, HMAC pepper and DB access for the SSN token service. Nothing here
-# touches the task definition: the app finds the key by its alias
-# (alias/<name_prefix>-ssn), reads the pepper secret by name, and signs in to
-# Aurora as ssn_vault_login with an IAM auth token, all with the task role.
-# Changing the task definition's env or secrets would replace it, and the
-# deploy delete gate blocks replaces.
+# Key, HMAC pepper and DB access for the SSN token service. Only the vault
+# service (below) uses them. Nothing here touches a task definition: the
+# vault finds the key by its alias (alias/<name_prefix>-ssn), reads the
+# pepper secret by name, and signs in to Aurora as ssn_vault_login with an
+# IAM auth token, all with its own task role. Changing a task definition's
+# env or secrets would replace it, and the deploy delete gate blocks
+# replaces.
 #
 # The cluster resource ID (for the rds-db:connect ARN) is read here, not passed
 # from the data layer as an output: a new output only exists in state after
@@ -90,15 +91,20 @@ module "ssn_vault" {
   db_cluster_resource_id = data.aws_rds_cluster.this.cluster_resource_id
 }
 
+# The app only forwards /ssn to the vault service, so its task role gets
+# explicit denies on the SSN key, the <name_prefix>/ssn/ secrets and the
+# vault login. Same resource and name as the allow policy it replaces, so
+# this is an in-place update (a new name would replace it, and the delete
+# gate blocks that).
 resource "aws_iam_role_policy" "app_ssn_vault" {
   name   = "ssn-vault"
   role   = module.ecs.app_task_role_name
-  policy = module.ssn_vault.task_policy_json
+  policy = module.ssn_vault.app_deny_policy_json
 }
 
 # The token service as its own ECS service (same image, vault-only mode),
-# reachable only from the app tasks by private DNS. The app does not call it
-# yet and keeps its own SSN policy above; a later PR moves the app over.
+# reachable only from the app tasks by private DNS. The app's /ssn routes
+# forward here and answer 503 if it can't answer.
 #
 # The endpoint and Aurora security groups are looked up by name, not passed
 # from the network unit: like the cluster above, a new network output would

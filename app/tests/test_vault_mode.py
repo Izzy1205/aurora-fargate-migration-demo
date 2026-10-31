@@ -5,9 +5,9 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from demo_app import main, vault
-from demo_app.main import get_reauth_verifier, get_repository, get_ssn_service
+from demo_app import main, ssn_api, vault
 from demo_app.ssn import HeaderReauthVerifier
+from demo_app.ssn_api import get_reauth_verifier, get_ssn_service
 
 FAKE_SSN = "900-00-0001"
 SSN_PATHS = {"/ssn/tokenize", "/ssn/tickets", "/ssn/reveal", "/ssn/tickets/refresh"}
@@ -32,14 +32,14 @@ def test_vault_serves_only_health_and_ssn():
 
 
 def test_app_routes_unchanged():
-    # The app still serves everything it did, /ssn included.
+    # The app still serves everything it did; its /ssn routes only forward.
     assert paths(main.app) >= {"/health", "/ready", "/orders", "/customers", "/", "/demo/seed-claim"} | SSN_PATHS
 
 
-def test_ssn_handlers_are_the_in_process_ones():
-    # The vault runs the in-process handlers, never the app's forwarding
+def test_ssn_handlers_are_the_ssn_api_ones():
+    # The vault runs the ssn_api handlers, never the app's forwarding
     # route, so it can't call itself.
-    local = {r.path: r.endpoint for r in main.ssn_local.routes if isinstance(r, APIRoute)}
+    local = {r.path: r.endpoint for r in ssn_api.ssn_router.routes if isinstance(r, APIRoute)}
     assert set(local) == SSN_PATHS
     for r in vault.app.routes:
         if isinstance(r, APIRoute) and r.path in SSN_PATHS:
@@ -52,12 +52,8 @@ def test_ssn_handlers_are_the_in_process_ones():
     ("POST", "/demo/seed-claim"), ("GET", "/docs"), ("GET", "/openapi.json"),
 ])
 def test_other_routes_are_404(method, path):
-    # A database override proves a 404 is "no route", not a DB failure.
-    vault.app.dependency_overrides[get_repository] = lambda: object()
-    try:
-        assert TestClient(vault.app).request(method, path).status_code == 404
-    finally:
-        vault.app.dependency_overrides.clear()
+    # The vault has no database dependency for these, so 404 is "no route".
+    assert TestClient(vault.app).request(method, path).status_code == 404
 
 
 def test_health_needs_nothing():
@@ -89,9 +85,9 @@ def test_unconfigured_service_is_503(monkeypatch):
     monkeypatch.delenv("SSN_NAME_PREFIX", raising=False)
     monkeypatch.delenv("ECS_CONTAINER_METADATA_URI_V4", raising=False)
     vault.app.dependency_overrides.clear()
-    main._ssn_service.reset()
+    ssn_api._ssn_service.reset()
     try:
         r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
         assert r.status_code == 503 and r.json() == {"detail": "ssn service unavailable"}
     finally:
-        main._ssn_service.reset()
+        ssn_api._ssn_service.reset()
