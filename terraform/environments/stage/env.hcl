@@ -18,8 +18,9 @@ locals {
   aurora_seconds_until_auto_pause = 300 # ignored, min capacity is above 0
   db_name                         = "demo"
 
-  app_desired_count = 2
-  budget_limit_usd  = 25
+  app_desired_count       = 2
+  ssn_vault_desired_count = 2 # one per AZ
+  budget_limit_usd        = 25
 
   # Count-only for first rollout. Flip to false after checking WAF logs.
   waf_rate_limit = 1000

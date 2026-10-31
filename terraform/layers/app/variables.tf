@@ -107,6 +107,11 @@ variable "app_desired_count" {
   type        = number
 }
 
+variable "ssn_vault_desired_count" {
+  description = "SSN vault tasks deploy.yml scales its service to after a release. Terraform keeps the service at 0 and ignores the count."
+  type        = number
+}
+
 variable "budget_email" {
   description = "Email address that receives the budget alerts. Terragrunt sets it from MIGDEMO_BUDGET_EMAIL."
   type        = string

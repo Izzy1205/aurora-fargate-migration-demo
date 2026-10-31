@@ -8,7 +8,8 @@ out at runtime with its own task role:
 1. name_prefix (for example migdemo-testing). SSN_NAME_PREFIX wins if set,
    for local runs. Otherwise it comes from the ECS task metadata endpoint,
    which Fargate gives every container as ECS_CONTAINER_METADATA_URI_V4:
-   the task family is "<name_prefix>-app", set by modules/ecs.
+   the task family is "<name_prefix>-app" (modules/ecs) or, for the
+   vault-only service, "<name_prefix>-ssn-vault" (modules/ssn_vault_service).
 2. The KMS key, by its fixed alias alias/<name_prefix>-ssn. DescribeKey
    turns that into the key ARN, which is what each vault row records.
 3. The HMAC pepper, from Secrets Manager at <name_prefix>/ssn/hmac-pepper.
@@ -39,6 +40,8 @@ NAME_PREFIX_ENV = "SSN_NAME_PREFIX"
 METADATA_ENV = "ECS_CONTAINER_METADATA_URI_V4"
 VAULT_DB_USER = "ssn_vault_login"  # matches db-logins.sql and modules/ssn_vault
 APP_FAMILY_SUFFIX = "-app"  # modules/ecs: family = "${name_prefix}-app"
+VAULT_FAMILY_SUFFIX = "-ssn-vault"  # modules/ssn_vault_service
+FAMILY_SUFFIXES = (APP_FAMILY_SUFFIX, VAULT_FAMILY_SUFFIX)
 
 # Fargate's task metadata endpoint. Anything else is refused, so a bad env
 # value can't point the app at some other host.
@@ -105,9 +108,10 @@ def resolve_name_prefix(
     except Exception as exc:  # noqa: BLE001 - network, JSON, anything
         raise SsnConfigError(f"ECS task metadata read failed ({type(exc).__name__})") from exc
     family = str(meta.get("Family", ""))
-    if not family.endswith(APP_FAMILY_SUFFIX):
-        raise SsnConfigError("ECS task family does not end in -app")
-    return _check_prefix(family[: -len(APP_FAMILY_SUFFIX)], "the ECS task family"), meta
+    for suffix in FAMILY_SUFFIXES:
+        if family.endswith(suffix):
+            return _check_prefix(family[: -len(suffix)], "the ECS task family"), meta
+    raise SsnConfigError("ECS task family does not end in -app or -ssn-vault")
 
 
 def resolve_region(env: Mapping[str, str], meta: dict[str, Any] | None) -> str:

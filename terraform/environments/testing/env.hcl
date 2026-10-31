@@ -19,8 +19,9 @@ locals {
   # Writer + reader so the demo can show a failover. Set to 1 for writer only.
   aurora_instance_count = 2
 
-  app_desired_count = 2 # one per AZ
-  budget_limit_usd  = 10
+  app_desired_count       = 2 # one per AZ
+  ssn_vault_desired_count = 1 # cost; one task is enough to test
+  budget_limit_usd        = 10
 
   # Blocking from day one. ALB only lets in my /32.
   waf_rate_limit = 1000
