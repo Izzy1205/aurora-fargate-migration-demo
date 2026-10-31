@@ -8,6 +8,7 @@ in-memory store."""
 import http.server
 import json
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -319,8 +320,13 @@ def _modules_after_import(module):
         f"import {module}\n"
         "print(json.dumps(sorted(sys.modules)))\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
-                         cwd=Path(__file__).resolve().parents[1])
+    # pytest adds src/ to sys.path (pyproject pythonpath), but a child
+    # process doesn't get that, and CI doesn't install the package.
+    app_dir = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(app_dir / "src"), env.get("PYTHONPATH")) if p)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=app_dir, env=env)
+    assert out.returncode == 0, out.stderr
     return set(json.loads(out.stdout))
 
 
