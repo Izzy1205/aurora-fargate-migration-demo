@@ -16,6 +16,8 @@
 #   Aurora: AWS/RDS, DBClusterIdentifier (+ Role for reader-only metrics)
 #   WAF:    AWS/WAFV2, WebACL + Region + Rule (Rule = ALL for the whole ACL)
 #   SQS:    AWS/SQS, QueueName
+#   Vault:  MigDemo/SsnVault, NamePrefix (the app's own EMF log lines, see
+#           app/src/demo_app/ssn_vault_client.py)
 
 locals {
   lb_dims = { LoadBalancer = var.alb_arn_suffix }
@@ -27,6 +29,17 @@ locals {
   db_dims    = { DBClusterIdentifier = var.aurora_cluster_identifier }
   queue_dims = { QueueName = var.payment_queue_name }
   dlq_dims   = { QueueName = var.payment_dlq_name }
+
+  # The SSN vault service (modules/ssn_vault_service) runs in the same
+  # cluster as the app and is always named "<name_prefix>-ssn-vault".
+  vault_ecs_dims = {
+    ClusterName = var.ecs_cluster_name
+    ServiceName = "${var.name_prefix}-ssn-vault"
+  }
+
+  # Must match _emf() in ssn_vault_client.py exactly: one dimension,
+  # NamePrefix, set to the environment name prefix (migdemo-testing).
+  vault_emf_dims = { NamePrefix = var.name_prefix }
 
   # Every instance that's a reader right now, whatever its name. After a
   # failover the roles swap, so a per-instance alarm would watch the wrong one.
@@ -253,6 +266,41 @@ locals {
       comparison  = "GreaterThanThreshold"
       threshold   = local.t.queue_oldest_message_seconds
       missing     = "notBreaching"
+    }
+    # The app answers 503 on /ssn and logs ssn_vault_unavailable when the
+    # vault can't be reached (DNS, refused, timeout) or answers 5xx. The
+    # metric only exists when that happens, so no data is good news.
+    # A task that can't work out its name prefix logs NamePrefix "unknown"
+    # instead; target-5xx still catches those 503s.
+    ssn-vault-unavailable = {
+      description = "The app couldn't use the SSN vault and answered 503 on /ssn. Check the vault tasks, its log group /ecs/<name_prefix>/ssn-vault, its security group and Cloud Map."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_vault_unavailable"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = 1
+      missing     = "notBreaching"
+    }
+    # Same metric as ecs-tasks-low, for the vault service. The floor is 1,
+    # not ssn_vault_desired_count, so this needs no new inputs: every
+    # environment runs at least one vault task. Deploys keep 100% healthy,
+    # so a rollout doesn't dip below it. No data means no tasks.
+    ssn-vault-tasks-low = {
+      description = "The SSN vault service has no live tasks, so every /ssn request answers 503."
+      namespace   = "AWS/ECS"
+      metric      = "LiveTaskCount"
+      statistic   = "Minimum"
+      dimensions  = local.vault_ecs_dims
+      period      = 60
+      evaluations = 3
+      datapoints  = 3
+      comparison  = "LessThanThreshold"
+      threshold   = 1
+      missing     = "breaching"
     }
   }
 }
