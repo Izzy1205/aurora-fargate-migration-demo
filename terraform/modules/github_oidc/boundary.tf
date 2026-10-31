@@ -5,9 +5,12 @@
 # including all of IAM.
 #
 # This covers what the ECS execution roles, the flow logs role and the app
-# task role (payment queue and SSN token service) actually use. The migrate task role has no
-# policies. If the main stack ever needs a role that does more, the boundary
-# has to grow here first, by hand, and bootstrap has to be applied again.
+# task role (payment queue) actually use. The migrate task role has no
+# policies. Nothing here allows the SSN key, the pepper or the vault DB
+# login: only the SSN vault service's roles get those, through the vault
+# boundary below. If the main stack ever needs a role that does more, the
+# boundary has to grow here first, by hand, and bootstrap has to be applied
+# again.
 data "aws_iam_policy_document" "workload_boundary" {
   statement {
     sid       = "EcrAuth"
@@ -84,52 +87,6 @@ data "aws_iam_policy_document" "workload_boundary" {
       values   = ["sqs.${local.region}.amazonaws.com"]
     }
   }
-  # The SSN token service (app task role for now). The key ARN and the
-  # Aurora cluster resource ID don't exist when bootstrap runs, so the key is
-  # matched by its alias and the DB login by its username.
-  # These four SSN statements move to the vault boundary below. They stay
-  # here until the app stops calling KMS itself (the cutover PR), then they
-  # come out of this boundary in a bootstrap change.
-  statement {
-    sid       = "DescribeSsnKey"
-    actions   = ["kms:DescribeKey"]
-    resources = ["*"]
-    condition {
-      test     = "ForAnyValue:StringEquals"
-      variable = "kms:ResourceAliases"
-      values   = ["alias/${local.p}-ssn"]
-    }
-  }
-
-  statement {
-    sid       = "UseSsnKeyWithPurpose"
-    actions   = ["kms:Encrypt", "kms:Decrypt"]
-    resources = ["*"]
-    condition {
-      test     = "ForAnyValue:StringEquals"
-      variable = "kms:ResourceAliases"
-      values   = ["alias/${local.p}-ssn"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:purpose"
-      values   = ["ssn"]
-    }
-  }
-
-  # The HMAC pepper. Its KMS decrypt goes through Secrets Manager, which
-  # DecryptSecretViaSecretsManager above already covers.
-  statement {
-    sid       = "ReadSsnPepper"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:${local.part}:secretsmanager:${local.region}:${local.account}:secret:${local.p}/ssn/*"]
-  }
-
-  statement {
-    sid       = "SsnVaultDbLogin"
-    actions   = ["rds-db:connect"]
-    resources = ["arn:${local.part}:rds-db:${local.region}:${local.account}:dbuser:*/ssn_vault_login"]
-  }
 }
 
 resource "aws_iam_policy" "workload_boundary" {
@@ -143,10 +100,8 @@ resource "aws_iam_policy" "workload_boundary" {
 # Only roles named <name_prefix>-ssn-vault-* may carry it, and those roles
 # may not get anything else (see the apply role in roles.tf). It has the SSN
 # key, the pepper secret and the ssn_vault_login DB login, plus image pull
-# and its own log group. No queues, no DB password secrets.
-#
-# Once the app no longer calls KMS itself, the SSN statements come out of
-# the workload boundary, and only this boundary allows them.
+# and its own log group. No queues, no DB password secrets. This is the only
+# boundary that allows the SSN statements.
 data "aws_iam_policy_document" "vault_boundary" {
   statement {
     sid       = "EcrAuth"
@@ -170,8 +125,8 @@ data "aws_iam_policy_document" "vault_boundary" {
     resources = ["${local.vault_log_group}:*"]
   }
 
-  # Same alias and purpose=ssn matching as the workload boundary, because
-  # the key ARN doesn't exist when bootstrap runs.
+  # The key is matched by its alias and purpose=ssn, because the key ARN
+  # doesn't exist when bootstrap runs.
   statement {
     sid       = "DescribeSsnKey"
     actions   = ["kms:DescribeKey"]
