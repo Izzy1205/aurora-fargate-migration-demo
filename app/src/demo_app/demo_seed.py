@@ -40,8 +40,8 @@ from typing import Any, Callable, Mapping, Protocol
 import psycopg
 
 from .db import DbSettings
-from .ssn.config import METADATA_ENV, NAME_PREFIX_ENV, fetch_task_metadata, resolve_name_prefix
-from .ssn.store import OPEN_CLAIM_STATUSES
+from .claims import OPEN_CLAIM_STATUSES
+from .ecs_task import METADATA_ENV, NAME_PREFIX_ENV, fetch_task_metadata, resolve_name_prefix
 
 TESTING_SUFFIX = "-testing"
 

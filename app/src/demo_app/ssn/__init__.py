@@ -8,25 +8,48 @@ and a reason and each write their own audit_event row in the same
 transaction.
 """
 
-from .crypto import Encryptor, FakeEncryptor, KmsEncryptor
-from .reauth import HeaderReauthVerifier, ReauthVerifier
-from .redact import RedactSsnFilter, install_log_redaction
-from .service import (
-    InvalidSsn,
-    NoOpenClaim,
-    RevealNotAllowed,
-    SsnTokenService,
-    TicketNotValid,
-    TokenNotFound,
-    TokenizeResult,
-    hmac_ssn,
-    new_ticket,
-    new_token,
-    normalize_ssn,
-)
-from .store import PostgresVaultStore, TicketRejected, TicketRow, VaultRow, VaultStore
+import importlib
+from typing import Any
 
-__all__ = [
+# Names are loaded on first use, not when the package is imported. The app
+# imports only ssn.redact; importing that must not pull in the token
+# service, the KMS encryptor or the vault store, which only the vault
+# service uses.
+_WHERE = {
+    "Encryptor": "crypto",
+    "FakeEncryptor": "crypto",
+    "KmsEncryptor": "crypto",
+    "HeaderReauthVerifier": "reauth",
+    "ReauthVerifier": "reauth",
+    "RedactSsnFilter": "redact",
+    "install_log_redaction": "redact",
+    "InvalidSsn": "service",
+    "NoOpenClaim": "service",
+    "RevealNotAllowed": "service",
+    "SsnTokenService": "service",
+    "TicketNotValid": "service",
+    "TokenNotFound": "service",
+    "TokenizeResult": "service",
+    "hmac_ssn": "service",
+    "new_ticket": "service",
+    "new_token": "service",
+    "normalize_ssn": "service",
+    "PostgresVaultStore": "store",
+    "TicketRejected": "store",
+    "TicketRow": "store",
+    "VaultRow": "store",
+    "VaultStore": "store",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _WHERE.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(f"{__name__}.{module}"), name)
+
+
+__all__ = [  # noqa: F822 - loaded by __getattr__
     "Encryptor",
     "FakeEncryptor",
     "HeaderReauthVerifier",

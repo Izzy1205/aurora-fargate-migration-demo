@@ -20,9 +20,9 @@ WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app_user') \gexec
 SELECT 'CREATE ROLE ssn_vault_rw NOLOGIN'
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_rw') \gexec
 -- The token service's login. It has no password: it signs in with an IAM
--- auth token (rds_iam), which the app mints with its task role. That keeps
--- a password secret out of this task's definition, since adding one there
--- would replace the Terraform-owned task definition. The name is fixed and
+-- auth token (rds_iam), which the vault service mints with its task role.
+-- That keeps a password secret out of its task definition, since adding one
+-- there would replace the Terraform-owned task definition. The name is fixed and
 -- matches vault_db_username in modules/ssn_vault.
 SELECT 'CREATE ROLE ssn_vault_login'
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ssn_vault_login') \gexec

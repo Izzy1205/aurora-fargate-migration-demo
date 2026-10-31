@@ -1,12 +1,13 @@
-"""The app's client for the private SSN vault service, with fallback.
+"""The app's client for the private SSN vault service.
 
 The app answers /ssn/tokenize, /ssn/tickets, /ssn/tickets/refresh and
-/ssn/reveal by forwarding the request to the vault service
-(modules/ssn_vault_service, demo_app.vault). The vault runs the same /ssn
-handlers as the app, against the same database.
+/ssn/reveal only by forwarding the request to the vault service
+(modules/ssn_vault_service, demo_app.vault). The app has no SSN code of its
+own any more: no token service, no KMS client, no pepper and no vault
+database login, and its task role is denied all three.
 
-When the vault can't be used, the app answers with its own in-process SSN
-code instead. That is the fallback. It happens only when:
+When the vault can't be used, the app answers 503 "ssn service unavailable"
+with no-store headers. That happens when:
 
 - the vault URL can't be worked out (no name prefix),
 - DNS fails, the connection is refused or times out,
@@ -14,18 +15,12 @@ code instead. That is the fallback. It happens only when:
 - the vault answers 5xx.
 
 Any vault answer below 500 (200, 201, 400, 401, 404, 409, 422, 429...) is
-passed back to the caller unchanged and never retried locally. A used
-ticket stays a 404.
-
-Single-use tickets stay single use. Both paths burn a ticket with the same
-UPDATE ... WHERE used_at IS NULL in the same database, so if the vault
-burned a ticket and then failed to answer, the local path gets a 404 for
-it, not a second reveal. Refresh revokes the old ticket the same way.
+passed back to the caller unchanged. Nothing is retried, so a ticket is
+never sent twice.
 
 Vault URL. http://ssn-vault.<name_prefix>.internal:8080, from the Cloud Map
-names in modules/ssn_vault_service. name_prefix comes from the same place
-the token service already gets it (ssn/config.py: SSN_NAME_PREFIX for local
-runs, else the ECS task family). Nothing new goes in the task definition:
+names in modules/ssn_vault_service. name_prefix comes from ecs_task.py
+(SSN_NAME_PREFIX for local runs, else the ECS task family). Nothing new goes in the task definition:
 changing its environment would replace it, and the deploy pipeline refuses
 plans that replace anything.
 
@@ -33,7 +28,7 @@ Logging. One JSON line per vault call. It holds the route, the status, the
 latency, a fixed reason word and an exception class name, never a body or a
 header value, so no SSN, token, ticket, actor or pepper. The lines are in
 CloudWatch embedded metric format, so CloudWatch also turns them into the
-metrics ssn_vault_call, ssn_vault_latency_ms and ssn_vault_fallback
+metrics ssn_vault_call, ssn_vault_latency_ms and ssn_vault_unavailable
 (namespace MigDemo/SsnVault) without any infrastructure change.
 """
 
@@ -49,7 +44,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .ssn.config import CachedOnSuccess, resolve_name_prefix
+from .ecs_task import CachedOnSuccess, resolve_name_prefix
 from .ssn.redact import RedactSsnFilter
 
 # Must match modules/ssn_vault_service: aws_service_discovery_service name,
@@ -156,7 +151,7 @@ _client = CachedOnSuccess(_build_client)
 
 
 def get_vault_client() -> VaultClient | None:
-    """None if the vault URL can't be worked out; the caller falls back."""
+    """None if the vault URL can't be worked out; the caller answers 503."""
     try:
         return _client.get()
     except Exception as exc:  # noqa: BLE001 - never fail the request over this
@@ -225,21 +220,21 @@ def log_vault_call(route: str, status: int, latency_ms: int, name_prefix: str) -
     )
 
 
-def log_fallback(
+def log_unavailable(
     route: str, reason: str, name_prefix: str, vault_status: int | None = None, error: str = "", latency_ms: int = 0
 ) -> None:
     events.warning(
         _emf(
-            [("ssn_vault_fallback", "Count")],
+            [("ssn_vault_unavailable", "Count")],
             {
                 "level": "WARN",
-                "event": "ssn_vault_fallback",
+                "event": "ssn_vault_unavailable",
                 "route": route,
                 "reason": reason,
                 "vault_status": vault_status,
                 "error": error,
                 "latency_ms": latency_ms,
-                "ssn_vault_fallback": 1,
+                "ssn_vault_unavailable": 1,
             },
             name_prefix,
         )

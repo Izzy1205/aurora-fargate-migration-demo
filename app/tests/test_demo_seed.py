@@ -266,20 +266,22 @@ def test_seed_then_ticket_flow_with_fakes(monkeypatch, store):
     """Tokenize, seed, issue, reveal, reveal again (404), refresh, old
     ticket 404, new ticket 200. The seeded claim is copied into the fake
     vault store, standing in for the shared database."""
-    from demo_app.main import get_reauth_verifier, get_ssn_service
+    from demo_app import vault
     from demo_app.ssn import HeaderReauthVerifier
+    from demo_app.ssn_api import get_reauth_verifier, get_ssn_service
     import time
 
     svc = SsnTokenService(store, FakeEncryptor(), bytes(range(32)))
     seed = FakeSeedStore()
     monkeypatch.setattr(main, "get_testing_guard", lambda: FakeGuard(True))
     monkeypatch.setattr(main, "get_seed_store", lambda: seed)
-    main.app.dependency_overrides[get_ssn_service] = lambda: svc
-    main.app.dependency_overrides[get_reauth_verifier] = lambda: HeaderReauthVerifier()
+    vault.app.dependency_overrides[get_ssn_service] = lambda: svc
+    vault.app.dependency_overrides[get_reauth_verifier] = lambda: HeaderReauthVerifier()
     try:
-        c = TestClient(main.app)
+        # /ssn on the vault app (the app only forwards), /demo on the app.
+        c = TestClient(vault.app)
         tok = c.post("/ssn/tokenize", json={"ssn": "900-12-3456"}).json()
-        s = c.post("/demo/seed-claim", json=tok, headers={"X-Actor": "izzy"})
+        s = TestClient(main.app).post("/demo/seed-claim", json=tok, headers={"X-Actor": "izzy"})
         assert s.status_code == 201
         claim_id = s.json()["claim_id"]
         store.add_claim(claim_id, tok["ssn_token"])
@@ -298,4 +300,4 @@ def test_seed_then_ticket_flow_with_fakes(monkeypatch, store):
         assert c.post("/ssn/reveal", json={"ticket": t2, "reason": "demo"}, headers=h).status_code == 404
         assert c.post("/ssn/reveal", json={"ticket": t3, "reason": "demo"}, headers=h).status_code == 200
     finally:
-        main.app.dependency_overrides.clear()
+        vault.app.dependency_overrides.clear()
