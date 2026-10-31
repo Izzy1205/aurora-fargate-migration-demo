@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from demo_app.main import app, get_reauth_verifier, get_ssn_service
+from demo_app.ssn_vault_client import get_vault_client
 from demo_app.ssn import FakeEncryptor, HeaderReauthVerifier, SsnTokenService
 from demo_app.ssn.store import (
     OPEN_CLAIM_STATUSES,
@@ -129,6 +130,15 @@ class FakeVaultStore:
         return self._row(new)
 
 
+@pytest.fixture(autouse=True)
+def no_vault_by_default():
+    """The app's /ssn routes go to the vault service. Tests that don't wire
+    one in get the in-process fallback, which is the old behavior."""
+    app.dependency_overrides[get_vault_client] = lambda: None
+    yield
+    app.dependency_overrides.pop(get_vault_client, None)
+
+
 @pytest.fixture
 def store():
     return FakeVaultStore()
@@ -150,7 +160,8 @@ def client(svc, reauth_clock):
     app.dependency_overrides[get_ssn_service] = lambda: svc
     app.dependency_overrides[get_reauth_verifier] = lambda: HeaderReauthVerifier(clock=lambda: reauth_clock["now"])
     yield TestClient(app)
-    app.dependency_overrides.clear()
+    app.dependency_overrides.pop(get_ssn_service, None)
+    app.dependency_overrides.pop(get_reauth_verifier, None)
 
 
 @pytest.fixture

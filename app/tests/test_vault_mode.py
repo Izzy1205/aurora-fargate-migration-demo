@@ -36,11 +36,15 @@ def test_app_routes_unchanged():
     assert paths(main.app) >= {"/health", "/ready", "/orders", "/customers", "/", "/demo/seed-claim"} | SSN_PATHS
 
 
-def test_ssn_handlers_are_the_apps():
-    by_path = {r.path: r.endpoint for r in main.app.routes if isinstance(r, APIRoute)}
+def test_ssn_handlers_are_the_in_process_ones():
+    # The vault runs the in-process handlers, never the app's forwarding
+    # route, so it can't call itself.
+    local = {r.path: r.endpoint for r in main.ssn_local.routes if isinstance(r, APIRoute)}
+    assert set(local) == SSN_PATHS
     for r in vault.app.routes:
         if isinstance(r, APIRoute) and r.path in SSN_PATHS:
-            assert r.endpoint is by_path[r.path]
+            assert r.endpoint is local[r.path]
+            assert r.endpoint is not main.ssn_via_vault
 
 
 @pytest.mark.parametrize("method,path", [
