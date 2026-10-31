@@ -10,7 +10,7 @@ import pytest
 from botocore.stub import Stubber
 from fastapi.testclient import TestClient
 
-from demo_app import main
+from demo_app import ssn_api, vault
 from demo_app.ssn import FakeEncryptor, KmsEncryptor, SsnTokenService
 from conftest import FakeVaultStore  # noqa: E402
 from demo_app.ssn.config import (
@@ -240,12 +240,12 @@ def wired(monkeypatch, aws):
         seen["settings"], seen["provider"] = settings, password_provider
         return store
 
-    monkeypatch.setattr(main, "PostgresVaultStore", fake_store)
-    monkeypatch.setattr(main, "load_runtime_config", lambda: load_runtime_config(dict(ECS_ENV), aws, meta))
-    monkeypatch.setattr(main, "KmsEncryptor", lambda key_id, client: FakeEncryptor())
-    main._ssn_service.reset()
-    yield TestClient(main.app), aws, store, seen
-    main._ssn_service.reset()
+    monkeypatch.setattr(ssn_api, "PostgresVaultStore", fake_store)
+    monkeypatch.setattr(ssn_api, "load_runtime_config", lambda: load_runtime_config(dict(ECS_ENV), aws, meta))
+    monkeypatch.setattr(ssn_api, "KmsEncryptor", lambda key_id, client: FakeEncryptor())
+    ssn_api._ssn_service.reset()
+    yield TestClient(vault.app), aws, store, seen
+    ssn_api._ssn_service.reset()
 
 
 def test_wired_tokenize_and_reveal(wired):
@@ -298,15 +298,15 @@ def test_kms_failure_on_reveal_is_503_and_rolls_back(monkeypatch):
     stub.add_response("encrypt", {"CiphertextBlob": b"blob", "KeyId": KEY_ARN})
     stub.add_client_error("decrypt", "KMSInvalidStateException", "key disabled")
     svc = SsnTokenService(store, KmsEncryptor(KEY_ARN, client=kms), bytes(range(32)))
-    main.app.dependency_overrides[main.get_ssn_service] = lambda: svc
+    vault.app.dependency_overrides[ssn_api.get_ssn_service] = lambda: svc
     try:
-        client = TestClient(main.app)
+        client = TestClient(vault.app)
         token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
         store.add_claim(1, token)
         ticket = svc.issue_ticket(token, 1, actor="a", reason="x").ticket
         r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "x"}, headers={"X-Actor": "a"})
     finally:
-        main.app.dependency_overrides.clear()
+        vault.app.dependency_overrides.clear()
     assert r.status_code == 503 and "900" not in r.text
     # Only the issue line landed; the ticket is still unused.
     assert [a.action for a in store.audit] == ["ssn.ticket_issue"]
@@ -319,11 +319,11 @@ def test_kms_failure_on_tokenize_is_503(monkeypatch):
     stub.activate()
     stub.add_client_error("encrypt", "AccessDeniedException", "denied")
     svc = SsnTokenService(MemoryStore(), KmsEncryptor(KEY_ARN, client=kms), bytes(range(32)))
-    main.app.dependency_overrides[main.get_ssn_service] = lambda: svc
+    vault.app.dependency_overrides[ssn_api.get_ssn_service] = lambda: svc
     try:
-        r = TestClient(main.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
     finally:
-        main.app.dependency_overrides.clear()
+        vault.app.dependency_overrides.clear()
     assert r.status_code == 503 and "900" not in r.text
 
 

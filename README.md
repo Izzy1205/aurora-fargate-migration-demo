@@ -165,26 +165,40 @@ Endpoints:
 - All of them answer 503 `ssn service unavailable` if anything below is missing
   or failing, and never echo input. Responses are `no-store`.
 
-How the app finds its key, pepper and login:
+Where it runs:
+The app's `/ssn` routes only forward to the private SSN vault service
+(`demo_app.vault`, `terraform/modules/ssn_vault_service`, reachable only
+from the app tasks at `ssn-vault.<name_prefix>.internal:8080`). If the
+vault can't be reached, times out or answers 5xx, the app answers 503 and
+logs a WARN `ssn_vault_unavailable` line (also a CloudWatch metric in
+`MigDemo/SsnVault`). The app has no SSN code: it never loads the token
+service, KMS, the pepper or the vault login, and its task role denies all
+three.
+
+How the vault finds its key, pepper and login:
 Nothing comes from the task definition. The first `/ssn` request works it
-out with the task role and caches it (a failure is retried after 30
+out with the vault task role and caches it (a failure is retried after 30
 seconds):
 1. The environment name prefix comes from the ECS task metadata endpoint,
-   which Fargate gives every container. The app task family is
-   `<name_prefix>-app`, so the app drops the `-app`. `SSN_NAME_PREFIX`
-   overrides it for local runs.
+   which Fargate gives every container. The vault task family is
+   `<name_prefix>-ssn-vault`, so it drops the `-ssn-vault`.
+   `SSN_NAME_PREFIX` overrides it for local runs.
 2. KMS `DescribeKey` on the alias gives the key ARN.
 3. Secrets Manager `GetSecretValue` reads the pepper.
 4. The database login is `ssn_vault_login`, a member of `ssn_vault_rw`.
    It has no password. Each connection signs in with a 15 minute IAM auth
-   token the app makes locally from its task role.
+   token the vault makes locally from its task role.
 
 Grants:
-- IAM, on the app task role (`terraform/modules/ssn_vault`): KMS Encrypt
+- IAM, on the vault task role (`terraform/modules/ssn_vault`): KMS Encrypt
   and Decrypt on the SSN key only with `purpose=ssn`; DescribeKey on that
   key; GetSecretValue on the pepper secret only, plus Decrypt on the key
   only through Secrets Manager; `rds-db:connect` as `ssn_vault_login` on
   this cluster only.
+- IAM, on the app task role (inline policy `ssn-vault`): explicit Deny on
+  the SSN key (Encrypt, Decrypt, ReEncrypt, DescribeKey, GenerateDataKey),
+  on GetSecretValue under `<name_prefix>/ssn/`, and on `rds-db:connect` as
+  `ssn_vault_login`.
 - Database (`db/logins/db-logins.sql`): `ssn_vault_login` can log in, has
   `rds_iam`, and is in `ssn_vault_rw`. `ssn_vault_rw` gets SELECT and
   INSERT on `ssn_vault` and INSERT on `audit_event`. On `ssn_ticket` it
@@ -202,9 +216,9 @@ Grants:
   ceiling for the token service's own roles once it moves out of the app
   task. Only roles named `<name_prefix>-ssn-vault-*` may carry it. It has
   the same SSN statements (pepper secret by exact name), image pull and the
-  `/ecs/<name_prefix>/ssn-vault` log group, and nothing else. After the app
-  stops calling KMS itself, the SSN statements come out of the workload
-  boundary.
+  `/ecs/<name_prefix>/ssn-vault` log group, and nothing else. The app no
+  longer calls KMS itself, so a separate bootstrap change takes the SSN
+  statements out of the workload boundary.
 - Network: the VPC has no NAT, so KMS needs its own interface endpoint
   (`kms` in `interface_endpoints`). Secrets Manager already had one.
 
@@ -229,10 +243,10 @@ Turning it on in an environment:
    fake SSN in the 9xx range (never a real one):
    `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -d '{"ssn":"900-12-3456"}'`
 
-If it answers 503, the app log names the step that failed and nothing
-else, for example `KMS key lookup failed (AccessDeniedException)`. AWS
-calls give up after a 3 second connect or 5 second read, with one retry,
-so a missing route shows up as a quick 503 instead of a load balancer
+If it answers 503, the vault log (`/ecs/<name_prefix>/ssn-vault`) names
+the step that failed and nothing else, for example
+`KMS key lookup failed (AccessDeniedException)`. AWS calls give up after
+a 3 second connect or 5 second read, with one retry, so a missing route shows up as a quick 503 instead of a load balancer
 504. Bringing it up in testing hit both: a 504 from the missing KMS
 endpoint, then AccessDenied from the boundary. The two fixes are above.
 

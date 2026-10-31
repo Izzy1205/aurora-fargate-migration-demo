@@ -7,7 +7,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from demo_app.main import app
+from demo_app.vault import app
 from demo_app.ssn import FakeEncryptor, InvalidSsn, RevealNotAllowed, TicketNotValid
 from demo_app.ssn.redact import RedactSsnFilter, redact
 from demo_app.ssn.service import TOKEN_RE, hmac_ssn, load_pepper_from_env, normalize_ssn
@@ -215,7 +215,7 @@ def test_unconfigured_service_is_503(monkeypatch):
     # Outside ECS with no override, the name prefix is unknown: fail closed.
     for var in ("SSN_NAME_PREFIX", "ECS_CONTAINER_METADATA_URI_V4"):
         monkeypatch.delenv(var, raising=False)
-    from demo_app.main import _ssn_service
+    from demo_app.ssn_api import _ssn_service
 
     _ssn_service.reset()
     r = TestClient(app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
