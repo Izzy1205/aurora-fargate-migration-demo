@@ -208,11 +208,10 @@ Grants:
   No DELETE anywhere. The same grants are in V11, `afterMigrate.sql` and
   `db-logins.sql`, and `app_user` loses its broad grant on `ssn_ticket`.
 - Permissions boundary (`terraform/modules/github_oidc/boundary.tf`, applied
-  with bootstrap): every role the stack creates has this ceiling, so the
-  task role's grants only work if the boundary allows them too. It allows
-  the same four things, matched by the key's alias, the `<name_prefix>/ssn/`
-  secret path and the `ssn_vault_login` username, because the key and the
-  cluster don't exist yet when bootstrap runs.
+  with bootstrap): every role the stack creates has this ceiling, so a
+  role's grants only work if the boundary allows them too. The workload
+  boundary (app and other roles) allows none of the SSN key, the pepper or
+  the vault login.
 - Vault boundary (same file, `<name_prefix>-ssn-vault-boundary`): the
   ceiling for the token service's own roles once it moves out of the app
   task. Only roles named `<name_prefix>-ssn-vault-*` may carry it. It has
@@ -232,7 +231,7 @@ name, and using IAM auth for the login, means this change only adds IAM
 statements and SQL. The task definitions stay as they are.
 
 Turning it on in an environment:
-1. Apply `terraform/bootstrap` so the boundary has the SSN statements.
+1. Apply `terraform/bootstrap` so the vault boundary has the SSN statements.
    CI never applies bootstrap.
 2. Merge and let the deploy run. It adds the KMS endpoint, the IAM
    statements and the login.
