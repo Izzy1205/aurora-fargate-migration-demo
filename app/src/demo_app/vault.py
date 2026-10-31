@@ -6,23 +6,30 @@ as the container command, on the same image as the app.
 It serves:
 
 /health  liveness, never touches the database or AWS
-/ssn/*   the same four routes as the app (tokenize, tickets, reveal,
-         tickets/refresh), with the same handlers and dependencies
+/ssn/*   the four in-process SSN routes (tokenize, tickets, reveal,
+         tickets/refresh), the same handlers the app falls back to
 
 Nothing else. No /, /orders, /customers, /ready or /demo/*.
 
-The /ssn routes are re-registered from demo_app.main's handlers, so the
-app itself is not changed and both always run the same code. Each route is
-built on this app, so dependency overrides set on this app apply here.
+The /ssn handlers come from demo_app.main's ssn_local router, never from
+the app's own /ssn routes, which forward here. So the vault can't forward
+to itself. Each route is built on this app, so dependency overrides set on
+this app apply here.
+
+One JSON line per /ssn request: route, status and latency only.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+import time
+from typing import Awaitable, Callable
+
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
 from . import main
+from .ssn_vault_client import log_served
 
 SSN_PREFIX = "/ssn/"
 
@@ -38,16 +45,19 @@ def health() -> dict[str, str]:
 
 
 def ssn_routes() -> list[APIRoute]:
-    return [r for r in main.app.routes if isinstance(r, APIRoute) and r.path.startswith(SSN_PREFIX)]
+    return [r for r in main.ssn_local.routes if isinstance(r, APIRoute) and r.path.startswith(SSN_PREFIX)]
 
 
-for _r in ssn_routes():
-    app.add_api_route(
-        _r.path,
-        _r.endpoint,
-        methods=sorted(_r.methods),
-        name=_r.name,
-        status_code=_r.status_code,
-        response_model=_r.response_model,
-        response_class=_r.response_class,
-    )
+main.add_ssn_routes(app)
+
+
+@app.middleware("http")
+async def _log_ssn_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    path = request.url.path
+    if not path.startswith(SSN_PREFIX):
+        return await call_next(request)
+    started = time.monotonic()
+    response = await call_next(request)
+    route = path if path in main.SSN_PATHS else "other"
+    log_served(route, response.status_code, int((time.monotonic() - started) * 1000))
+    return response

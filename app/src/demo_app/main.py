@@ -9,6 +9,9 @@
 /ssn/tickets         POST, token and open claim in, one-use reveal ticket out
 /ssn/reveal          POST, ticket in, SSN out, burns the ticket, audited
 /ssn/tickets/refresh POST, ticket in, new ticket out, needs re-auth, audited
+                     The four /ssn routes go to the private SSN vault service
+                     and fall back to the in-process handlers below if it
+                     can't answer (see ssn_vault_client.py).
 /demo/seed-claim     POST, testing only: fake claimant and open claim for a
                      token (see demo_seed.py). 404 in every other environment.
 """
@@ -18,14 +21,16 @@ from __future__ import annotations
 import html
 import logging
 import os
+import time
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .db import DbSettings, Repository
@@ -57,6 +62,14 @@ from .ssn.config import (
     iam_auth_password,
     load_runtime_config,
 )
+from .ssn_vault_client import (
+    SSN_PATHS,
+    VaultClient,
+    VaultUnavailable,
+    get_vault_client,
+    log_fallback,
+    log_vault_call,
+)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 install_log_redaction()
@@ -65,6 +78,10 @@ log = logging.getLogger("demo_app")
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
 
 app = FastAPI(title="Migration demo", version=APP_VERSION, docs_url=None, redoc_url=None)
+
+# The in-process SSN handlers. The app serves them only as the fallback
+# (see local_ssn_app below); the vault service serves them directly.
+ssn_local = APIRouter()
 
 
 @lru_cache(maxsize=1)
@@ -229,7 +246,7 @@ def _ssn_failed(what: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail="ssn service unavailable", headers=NO_STORE)
 
 
-@app.post("/ssn/tokenize")
+@ssn_local.post("/ssn/tokenize")
 def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
     # TODO: restrict to the sign-up and wage-loader callers (service auth),
     # and rate limit. Tokenize never returns the SSN, but it is an oracle.
@@ -246,7 +263,7 @@ def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
     )
 
 
-@app.post("/ssn/tickets")
+@ssn_local.post("/ssn/tickets")
 def ssn_issue_ticket(
     body: IssueTicketRequest,
     svc: SsnService,
@@ -264,7 +281,7 @@ def ssn_issue_ticket(
     return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
 
 
-@app.post("/ssn/reveal")
+@ssn_local.post("/ssn/reveal")
 def ssn_reveal(
     body: RevealRequest,
     svc: SsnService,
@@ -283,7 +300,7 @@ def ssn_reveal(
     return JSONResponse({"ssn_token": row.ssn_token, "claim_id": t.claim_id, "ssn": ssn}, headers=NO_STORE)
 
 
-@app.post("/ssn/tickets/refresh")
+@ssn_local.post("/ssn/tickets/refresh")
 def ssn_refresh_ticket(
     body: RefreshRequest,
     request: Request,
@@ -303,6 +320,111 @@ def ssn_refresh_ticket(
     except Exception as exc:  # noqa: BLE001
         raise _ssn_failed("ticket refresh", exc) from exc
     return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
+
+
+def add_ssn_routes(target: FastAPI) -> None:
+    """Register the in-process /ssn handlers on target. Each route is built
+    on target, so dependency overrides set on target apply."""
+    for r in ssn_local.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        target.add_api_route(
+            r.path,
+            r.endpoint,
+            methods=sorted(r.methods),
+            name=r.name,
+            status_code=r.status_code,
+            response_model=r.response_model,
+            response_class=r.response_class,
+        )
+
+
+# The fallback: the same handlers, run in this process. It shares the app's
+# dependency overrides, so tests that swap the SSN service on the app swap
+# it here too.
+local_ssn_app = FastAPI(title="SSN fallback", docs_url=None, redoc_url=None, openapi_url=None)
+local_ssn_app.add_exception_handler(RequestValidationError, _validation_error)
+local_ssn_app.dependency_overrides = app.dependency_overrides
+add_ssn_routes(local_ssn_app)
+
+
+async def _call_local(request: Request, body: bytes) -> Response:
+    """Run the request through local_ssn_app in process: same validation,
+    dependencies, re-auth check and error handling as before the vault."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": request.scope.get("http_version", "1.1"),
+        "method": request.method,
+        "scheme": request.url.scheme,
+        "path": request.url.path,
+        "raw_path": request.url.path.encode("ascii"),
+        "root_path": "",
+        "query_string": request.scope.get("query_string", b""),
+        "headers": list(request.scope.get("headers", [])),
+        "client": request.scope.get("client"),
+        "server": request.scope.get("server"),
+        "state": {},
+    }
+    delivered = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    start: dict[str, Any] = {}
+    chunks: list[bytes] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            start.update(message)
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    try:
+        await local_ssn_app(scope, receive, send)
+    except Exception as exc:  # noqa: BLE001 - the 500 may already be in start
+        log.warning("ssn local fallback failed: %s", type(exc).__name__)
+        if not start:
+            return JSONResponse({"detail": "ssn service unavailable"}, status_code=503, headers=NO_STORE)
+    response = Response(content=b"".join(chunks), status_code=int(start["status"]))
+    response.raw_headers = list(start.get("headers", []))
+    return response
+
+
+VaultDep = Annotated[VaultClient | None, Depends(get_vault_client)]
+
+
+async def ssn_via_vault(request: Request, vault: VaultDep) -> Response:
+    """Forward to the SSN vault service. Any answer below 500 goes back
+    unchanged. No answer, or a 5xx, means the in-process handlers answer."""
+    route = request.url.path
+    body = await request.body()
+    started = time.monotonic()
+
+    def elapsed_ms() -> int:
+        return int((time.monotonic() - started) * 1000)
+
+    if vault is None:
+        log_fallback(route, "no_vault_url", "")
+        return await _call_local(request, body)
+    try:
+        answer = await run_in_threadpool(vault.send, route, body, request.headers)
+    except VaultUnavailable as exc:
+        log_fallback(route, exc.reason, vault.name_prefix, error=exc.error, latency_ms=elapsed_ms())
+        return await _call_local(request, body)
+    if answer.status >= 500:
+        log_fallback(route, "vault_5xx", vault.name_prefix, vault_status=answer.status, latency_ms=elapsed_ms())
+        return await _call_local(request, body)
+    log_vault_call(route, answer.status, elapsed_ms(), vault.name_prefix)
+    return Response(content=answer.body, status_code=answer.status, headers=answer.headers)
+
+
+for _path in SSN_PATHS:
+    app.add_api_route(_path, ssn_via_vault, methods=["POST"], name=f"ssn_via_vault:{_path}")
 
 
 @lru_cache(maxsize=1)
