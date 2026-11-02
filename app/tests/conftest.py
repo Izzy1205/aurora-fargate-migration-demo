@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from demo_app import vault
 from demo_app.main import app
-from demo_app.ssn_api import get_rate_limiter, get_reauth_verifier, get_ssn_service
+from demo_app.ssn_api import get_rate_limiter, get_reauth_verifier, get_ssn_service, get_tokenize_callers
 from demo_app.ssn_vault_client import get_vault_client
 from demo_app.ssn import FakeEncryptor, HeaderReauthVerifier, SsnTokenService
+from demo_app.ssn.callers import DEFAULT_CALLERS, CallerPolicy
 from demo_app.ssn.store import (
     OPEN_CLAIM_STATUSES,
     REJECT_CLAIM_CLOSED,
@@ -26,6 +27,8 @@ from demo_app.ssn.store import (
 
 PEPPER = bytes(range(32))  # test-only key
 T0 = datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc)
+CALLER_NAME = "claimant-signup"  # on the default tokenize allowlist
+CALLER = {"X-Caller": CALLER_NAME}
 
 
 class FakeVaultStore:
@@ -84,13 +87,21 @@ class FakeVaultStore:
     def find_by_hmac(self, ssn_hmac):
         return next((r for r in self.rows if r.ssn_hmac == ssn_hmac), None)
 
-    def insert(self, row):
+    def find_audited(self, ssn_hmac, audit):
+        found = self.find_by_hmac(ssn_hmac)
+        if found is not None:
+            self._commit_audit(audit(found))
+        return found
+
+    def insert(self, row, audit):
         existing = self.find_by_hmac(row.ssn_hmac)
         if existing:
-            return existing
+            self._commit_audit(audit(existing, False))
+            return existing, False
         row = dataclasses.replace(row, id=len(self.rows) + 1)
+        self._commit_audit(audit(row, True))  # raises before the row is kept
         self.rows.append(row)
-        return row
+        return row, True
 
     def issue_ticket(self, ssn_token, claim_id, ticket, ttl_hours, actor, audit):
         vault = next((r for r in self.rows if r.ssn_token == ssn_token), None)
@@ -149,6 +160,16 @@ def fresh_rate_limiter():
     get_rate_limiter.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def default_tokenize_callers():
+    """The default allowlist, with "demo" off, whatever the test env says."""
+    vault.app.dependency_overrides[get_tokenize_callers] = lambda: CallerPolicy(DEFAULT_CALLERS)
+    get_tokenize_callers.cache_clear()
+    yield
+    vault.app.dependency_overrides.pop(get_tokenize_callers, None)
+    get_tokenize_callers.cache_clear()
+
+
 @pytest.fixture
 def store():
     return FakeVaultStore()
@@ -186,7 +207,7 @@ def issue(svc, store):
     def _issue(ssn, actor="staff-1", status="submitted"):
         counter["n"] += 1
         claim_id = 100 + counter["n"]
-        token = svc.tokenize(ssn).ssn_token
+        token = svc.tokenize(ssn, caller=CALLER_NAME).ssn_token
         store.add_claim(claim_id, token, status)
         return token, svc.issue_ticket(token, claim_id, actor=actor, reason="identity check")
 

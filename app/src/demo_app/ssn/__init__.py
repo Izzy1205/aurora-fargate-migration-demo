@@ -5,7 +5,8 @@ vault holds the coat (ssn_vault, the SSN encrypted with a dedicated KMS
 key). Seeing the coat takes a reveal ticket (ssn_ticket): one use, tied to
 an open claim, 72 hours at most. Issue, reveal and refresh need an actor
 and a reason and each write their own audit_event row in the same
-transaction.
+transaction. Tokenize needs an allowed caller (callers.py) and writes one
+too.
 """
 
 import importlib
@@ -16,6 +17,7 @@ from typing import Any
 # service, the KMS encryptor or the vault store, which only the vault
 # service uses.
 _WHERE = {
+    "CallerPolicy": "callers",
     "Encryptor": "crypto",
     "FakeEncryptor": "crypto",
     "KmsEncryptor": "crypto",
@@ -50,6 +52,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [  # noqa: F822 - loaded by __getattr__
+    "CallerPolicy",
     "Encryptor",
     "FakeEncryptor",
     "HeaderReauthVerifier",

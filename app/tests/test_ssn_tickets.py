@@ -8,6 +8,7 @@ import pytest
 
 from demo_app.ssn import HeaderReauthVerifier, NoOpenClaim, RevealNotAllowed, TicketNotValid
 from demo_app.ssn.service import TICKET_RE, TICKET_TTL_HOURS, TOKEN_RE
+from conftest import CALLER, CALLER_NAME  # noqa: E402
 
 FAKE_SSN = "900-00-0001"
 FAKE_DIGITS = "900000001"
@@ -20,8 +21,14 @@ def reauth_headers(clock, actor="staff-1", age=10):
     return {"X-Actor": actor, "X-Reauth-Actor": actor, "X-Reauth-At": str(int(clock["now"] - age))}
 
 
+def ticket_audit(store):
+    # Tokenize writes its own audit row (test_ssn_tokenize_caller.py). These
+    # tests are about the ticket rows, so leave it out.
+    return [a for a in store.audit if a.action != "ssn.tokenize"]
+
+
 def actions(store):
-    return [a.action for a in store.audit]
+    return [a.action for a in ticket_audit(store)]
 
 
 # --- issue -----------------------------------------------------------------
@@ -31,7 +38,7 @@ def test_issue_gives_a_ticket_capped_at_72_hours(svc, store, issue):
     assert TICKET_RE.match(t.ticket) and not TOKEN_RE.match(t.ticket)
     assert t.expires_at - t.issued_at == timedelta(hours=72) and TICKET_TTL_HOURS == 72
     assert actions(store) == ["ssn.ticket_issue"]
-    a = store.audit[0]
+    a = ticket_audit(store)[0]
     assert (a.actor, a.record_type, a.record_id, a.reason) == ("staff-1", "ssn_ticket", t.id, "identity check")
     assert a.after_data == {"ssn_token": token, "claim_id": t.claim_id, "expires_at": t.expires_at.isoformat()}
     # The ticket is a bearer value. app_user can read audit_event, so it's not there.
@@ -39,26 +46,26 @@ def test_issue_gives_a_ticket_capped_at_72_hours(svc, store, issue):
 
 
 def test_issue_needs_actor_and_reason(svc, store):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+    token = svc.tokenize(FAKE_SSN, caller=CALLER_NAME).ssn_token
     store.add_claim(1, token)
     for actor, reason in [("", "why"), ("staff-1", ""), ("staff-1", "  ")]:
         with pytest.raises(RevealNotAllowed):
             svc.issue_ticket(token, 1, actor=actor, reason=reason)
-    assert store.tickets == [] and store.audit == []
+    assert store.tickets == [] and ticket_audit(store) == []
 
 
 @pytest.mark.parametrize("status", ["denied", "withdrawn"])
 def test_no_ticket_for_a_closed_claim(svc, store, status):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+    token = svc.tokenize(FAKE_SSN, caller=CALLER_NAME).ssn_token
     store.add_claim(1, token, status)
     with pytest.raises(NoOpenClaim):
         svc.issue_ticket(token, 1, actor="staff-1", reason="why")
-    assert store.tickets == [] and store.audit == []
+    assert store.tickets == [] and ticket_audit(store) == []
 
 
 def test_no_ticket_for_someone_elses_claim_or_unknown_token(svc, store):
-    mine = svc.tokenize(FAKE_SSN).ssn_token
-    theirs = svc.tokenize(OTHER_SSN).ssn_token
+    mine = svc.tokenize(FAKE_SSN, caller=CALLER_NAME).ssn_token
+    theirs = svc.tokenize(OTHER_SSN, caller=CALLER_NAME).ssn_token
     store.add_claim(1, theirs)
     for token, claim_id in [(mine, 1), (mine, 999), ("tok_" + "Q" * 32, 1), (FAKE_SSN, 1)]:
         with pytest.raises(NoOpenClaim):
@@ -146,7 +153,7 @@ def test_refresh_writes_one_refresh_audit_line(svc, store, issue):
     svc.reveal(new.ticket, actor="staff-1", reason="verify")
     # Three steps, three distinct audit types, one line each.
     assert actions(store) == ["ssn.ticket_issue", "ssn.ticket_refresh", "ssn.reveal"]
-    a = store.audit[1]
+    a = ticket_audit(store)[1]
     assert (a.actor, a.record_type, a.record_id, a.reason) == ("staff-1", "ssn_ticket", new.id, "more time")
     assert a.after_data == {"replaces_ticket_id": old.id, "claim_id": old.claim_id,
                             "expires_at": new.expires_at.isoformat()}
@@ -224,7 +231,7 @@ def test_header_reauth_verifier():
 # --- HTTP ------------------------------------------------------------------
 
 def _ticket(client, store, claim_id=7, ssn=FAKE_SSN):
-    token = client.post("/ssn/tokenize", json={"ssn": ssn}).json()["ssn_token"]
+    token = client.post("/ssn/tokenize", json={"ssn": ssn}, headers=CALLER).json()["ssn_token"]
     store.add_claim(claim_id, token)
     r = client.post("/ssn/tickets", json={"ssn_token": token, "claim_id": claim_id, "reason": "verify"}, headers=STAFF)
     assert r.status_code == 201
@@ -234,7 +241,7 @@ def _ticket(client, store, claim_id=7, ssn=FAKE_SSN):
 
 
 def test_http_issue_errors(client, store):
-    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
+    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER).json()["ssn_token"]
     store.add_claim(7, token, "denied")
     body = {"ssn_token": token, "claim_id": 7, "reason": "verify"}
     assert client.post("/ssn/tickets", json=body).status_code == 401
@@ -242,7 +249,7 @@ def test_http_issue_errors(client, store):
     r = client.post("/ssn/tickets", json=body, headers=STAFF)
     assert r.status_code == 404 and r.json() == {"detail": "no open claim for this token"}
     assert client.post("/ssn/tickets", json={**body, "claim_id": 0}, headers=STAFF).status_code == 422
-    assert store.audit == []
+    assert ticket_audit(store) == []
 
 
 def test_http_rejections_all_look_the_same(client, store):

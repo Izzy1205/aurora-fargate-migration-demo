@@ -32,7 +32,7 @@ from demo_app.ssn_vault_client import (
     vault_host,
 )
 
-from conftest import PEPPER, T0  # noqa: E402 - shared test-only key
+from conftest import CALLER, PEPPER, T0  # noqa: E402 - shared test-only key and caller
 
 SSN = "900-12-3456"
 ACTOR = {"X-Actor": "staff-7"}
@@ -119,7 +119,7 @@ def assert_unavailable(r):
 
 
 def tokenize(c):
-    r = c.post("/ssn/tokenize", json={"ssn": SSN})
+    r = c.post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER)
     assert r.status_code in (200, 201), r.text
     return r.json()["ssn_token"]
 
@@ -211,8 +211,8 @@ def test_vault_4xx_is_passed_through(app_client, fake_vault, store, events, code
 
 
 def test_vault_validation_and_auth_errors_pass_through(app_client, fake_vault, events):
-    assert app_client.post("/ssn/tokenize", json={"ssn": "12"}).status_code == 400
-    r = app_client.post("/ssn/tokenize", json={"nope": SSN})
+    assert app_client.post("/ssn/tokenize", json={"ssn": "12"}, headers=CALLER).status_code == 400
+    r = app_client.post("/ssn/tokenize", json={"nope": SSN}, headers=CALLER)
     assert r.status_code == 422 and SSN not in r.text
     r = app_client.post("/ssn/reveal", json={"ticket": "rtk_x", "reason": "r"})
     assert r.status_code == 401
@@ -235,12 +235,25 @@ def test_refresh_through_the_vault_forwards_reauth_headers(app_client, fake_vaul
     assert "cookie" not in sent and "authorization" not in sent
 
 
+
+def test_tokenize_through_the_vault_forwards_the_caller(app_client, fake_vault, store):
+    tokenize(app_client)
+    path, sent = fake_vault.calls[-1]
+    assert path == "/ssn/tokenize" and sent["x-caller"] == CALLER["X-Caller"]
+    assert [(a.actor, a.action) for a in store.audit] == [(CALLER["X-Caller"], "ssn.tokenize")]
+    # No caller: the vault's 403 comes back through the app as is.
+    r = app_client.post("/ssn/tokenize", json={"ssn": SSN})
+    assert r.status_code == 403 and r.json() == {"detail": "caller not allowed"}
+    assert r.headers["cache-control"] == "no-store"
+    assert len(store.audit) == 1
+
+
 # --- vault unavailable: 503, no SSN code in the app
 
 
 def test_vault_5xx_is_a_503(app_client, fake_vault, store, events):
     fake_vault.mode = "status:503"
-    r = app_client.post("/ssn/tokenize", json={"ssn": SSN})
+    r = app_client.post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER)
     assert_unavailable(r)
     assert store.rows == []  # nothing ran in the app
     [ev] = events.docs("ssn_vault_unavailable")
@@ -251,7 +264,7 @@ def test_vault_5xx_is_a_503(app_client, fake_vault, store, events):
 @pytest.mark.parametrize("code", [500, 502, 503, 504])
 def test_vault_5xx_body_is_not_passed_on(app_client, fake_vault, code):
     fake_vault.mode = f"status:{code}"
-    r = app_client.post("/ssn/tokenize", json={"ssn": SSN})
+    r = app_client.post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER)
     assert_unavailable(r)
     assert "vault" not in r.text
 
@@ -269,7 +282,7 @@ def test_connection_error_is_a_503_on_every_route(app_client, fake_vault, store,
 
 def test_no_vault_url_is_a_503(store, events):
     # conftest's autouse fixture gives the app no vault client.
-    r = TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN})
+    r = TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER)
     assert_unavailable(r)
     assert store.rows == []
     [ev] = events.docs("ssn_vault_unavailable")
@@ -295,7 +308,7 @@ def test_vault_burns_the_ticket_then_fails_is_a_503_and_no_retry(app_client, fak
 def test_bad_json_on_the_app_is_forwarded_not_echoed(app_client, fake_vault):
     # The app doesn't validate /ssn bodies any more; the vault does, with
     # the same bare 422.
-    r = app_client.post("/ssn/tokenize", json={"ssn": [SSN]})
+    r = app_client.post("/ssn/tokenize", json={"ssn": [SSN]}, headers=CALLER)
     assert r.status_code == 422 and r.json() == {"detail": "invalid request"} and "900" not in r.text
     assert len(fake_vault.calls) == 1
 
@@ -361,7 +374,7 @@ def test_overriding_the_ssn_service_on_the_app_changes_nothing(svc, store, event
     # routes still only forward (here: no vault, so 503).
     main.app.dependency_overrides[get_ssn_service] = lambda: svc
     try:
-        assert_unavailable(TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN}))
+        assert_unavailable(TestClient(main.app).post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER))
     finally:
         main.app.dependency_overrides.pop(get_ssn_service, None)
     assert store.rows == []
@@ -382,21 +395,25 @@ def test_no_secrets_in_any_log_line(app_client, fake_vault, store, events, caplo
     assert reveal(app_client, t2).status_code == 503
     text = "\n".join(events.lines + [r.getMessage() for r in caplog.records])
     assert events.lines and events.docs("ssn_vault_unavailable") and events.docs("ssn_vault_call")
-    for secret in ["900123456", "900-12-3456", token, t, t2, "staff-7", PEPPER.hex(), str(int(reauth_clock["now"]))]:
+    hidden = ["900123456", "900-12-3456", token, t, t2, "staff-7", CALLER["X-Caller"], PEPPER.hex(),
+               str(int(reauth_clock["now"]))]
+    for secret in hidden:
         assert secret not in text
     for d in events.docs():
         assert set(d) <= {"_aws", "NamePrefix", "level", "event", "route", "status", "latency_ms", "reason",
                           "vault_status", "error", "ssn_vault_call", "ssn_vault_latency_ms", "ssn_vault_unavailable",
                           # the vault's own audit and rate limit lines (ssn_events.py)
-                          "action", "bucket", "limit", "ssn_reveal", "ssn_ticket_issue", "ssn_ticket_refresh",
-                          "ssn_ticket_rejected", "ssn_closed_claim_attempt", "ssn_rate_limited"}
+                          "action", "bucket", "limit", "ssn_tokenize", "ssn_reveal", "ssn_ticket_issue",
+                          "ssn_ticket_refresh", "ssn_ticket_rejected", "ssn_closed_claim_attempt", "ssn_rate_limited",
+                          "ssn_caller_rejected"}
 
 
 def test_log_lines_are_cloudwatch_embedded_metrics(app_client, fake_vault, events):
     tokenize(app_client)
     fake_vault.mode = "down"
-    assert app_client.post("/ssn/tokenize", json={"ssn": SSN}).status_code == 503
-    docs = [d for d in events.docs() if d["event"] != "ssn_vault_served"]
+    assert app_client.post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER).status_code == 503
+    # The app's lines only. The vault's own (served, audited) are tested elsewhere.
+    docs = [d for d in events.docs() if d["event"] not in ("ssn_vault_served", "ssn_audited")]
     for d in docs:
         [directive] = d["_aws"]["CloudWatchMetrics"]
         assert directive["Namespace"] == "MigDemo/SsnVault"
@@ -410,7 +427,7 @@ def test_log_lines_are_cloudwatch_embedded_metrics(app_client, fake_vault, event
 def test_vault_logs_route_status_and_latency_only(svc, events):
     vault.app.dependency_overrides[get_ssn_service] = lambda: svc
     try:
-        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": SSN})
+        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": SSN}, headers=CALLER)
     finally:
         vault.app.dependency_overrides.clear()
     assert r.status_code == 201
@@ -462,13 +479,14 @@ def test_client_forwards_only_the_needed_headers(server):
     c = VaultClient("127.0.0.1", server.server_address[1])
     r = c.send("/ssn/reveal", b'{"ticket":"rtk_x"}', {
         "content-type": "application/json", "x-actor": "a1", "x-reauth-actor": "a1", "x-reauth-at": "1",
-        "cookie": "c", "authorization": "b", "x-forwarded-for": "1.2.3.4",
+        "x-caller": "wage-loader", "cookie": "c", "authorization": "b", "x-forwarded-for": "1.2.3.4",
     })
     assert (r.status, r.body) == (200, b'{"ok":true}')
     assert r.headers == {"content-type": "application/json", "cache-control": "no-store"}
     [(path, headers, body)] = _Handler.seen
     assert path == "/ssn/reveal" and body == b'{"ticket":"rtk_x"}'
     assert headers["x-actor"] == "a1" and headers["x-reauth-actor"] == "a1" and headers["x-reauth-at"] == "1"
+    assert headers["x-caller"] == "wage-loader"
     assert not {"cookie", "authorization", "x-forwarded-for"} & set(headers)
 
 

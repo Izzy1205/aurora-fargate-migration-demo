@@ -15,7 +15,7 @@ from demo_app.ssn.service import TOKEN_RE, hmac_ssn, load_pepper_from_env, norma
 FAKE_SSN = "900-00-0001"
 FAKE_DIGITS = "900000001"
 OTHER_SSN = "900-00-0002"
-from conftest import PEPPER  # noqa: E402 - shared test-only key
+from conftest import CALLER, CALLER_NAME, PEPPER  # noqa: E402 - shared test-only key and caller
 # claimant.ssn_token's CHECK from V6, applied here the way Postgres would.
 CLAIMANT_CHECK = re.compile(r"^[0-9]{3}-?[0-9]{2}-?[0-9]{4}$")
 
@@ -32,23 +32,23 @@ def all_stored_bytes(store):
 # --- service ---------------------------------------------------------------
 
 def test_tokenize_is_idempotent(svc, store):
-    a = svc.tokenize(FAKE_SSN)
-    b = svc.tokenize(FAKE_DIGITS)  # same number, no dashes
+    a = svc.tokenize(FAKE_SSN, caller=CALLER_NAME)
+    b = svc.tokenize(FAKE_DIGITS, caller=CALLER_NAME)  # same number, no dashes
     assert a.created and not b.created
     assert a.ssn_token == b.ssn_token and a.ssn_hmac == b.ssn_hmac
     assert len(store.rows) == 1
-    assert svc.tokenize(OTHER_SSN).ssn_token != a.ssn_token
+    assert svc.tokenize(OTHER_SSN, caller=CALLER_NAME).ssn_token != a.ssn_token
 
 
 def test_token_passes_claimant_check_and_vault_format(svc):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+    token = svc.tokenize(FAKE_SSN, caller=CALLER_NAME).ssn_token
     assert not CLAIMANT_CHECK.match(token)
     assert TOKEN_RE.match(token)
     assert FAKE_DIGITS not in token
 
 
 def test_hmac_is_keyed_sha256_of_digits(svc):
-    result = svc.tokenize(FAKE_SSN)
+    result = svc.tokenize(FAKE_SSN, caller=CALLER_NAME)
     assert len(result.ssn_hmac) == 32
     assert result.ssn_hmac == hmac_ssn(PEPPER, FAKE_DIGITS)
     assert result.ssn_hmac != hmac_ssn(bytes(32), FAKE_DIGITS)
@@ -63,7 +63,7 @@ def test_raw_ssn_only_in_ciphertext(svc, store, issue):
 
 
 def test_encryption_context_binds_token(svc, store):
-    svc.tokenize(FAKE_SSN)
+    svc.tokenize(FAKE_SSN, caller=CALLER_NAME)
     row = store.rows[0]
     enc = FakeEncryptor()
     with pytest.raises(ValueError):
@@ -131,7 +131,7 @@ def test_ssn_never_in_logs(svc, issue, caplog):
     _, t = issue(FAKE_SSN)
     svc.reveal(t.ticket, actor="staff-1", reason="why")
     with pytest.raises(InvalidSsn):
-        svc.tokenize("900-00-00019")
+        svc.tokenize("900-00-00019", caller=CALLER_NAME)
     assert caplog.records
     for rec in caplog.records:
         assert FAKE_DIGITS not in rec.getMessage() and FAKE_SSN not in rec.getMessage()
@@ -150,24 +150,24 @@ def test_log_filter_masks_ssn_shapes():
 # --- HTTP ------------------------------------------------------------------
 
 def test_http_tokenize(client):
-    r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+    r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     assert r.status_code == 201
     body = r.json()
     assert TOKEN_RE.match(body["ssn_token"]) and len(bytes.fromhex(body["ssn_hmac"])) == 32
     assert FAKE_DIGITS not in r.text
-    again = client.post("/ssn/tokenize", json={"ssn": FAKE_DIGITS})
+    again = client.post("/ssn/tokenize", json={"ssn": FAKE_DIGITS}, headers=CALLER)
     assert again.status_code == 200 and again.json() == body
 
 
 def test_http_tokenize_bad_input_does_not_echo(client):
-    r = client.post("/ssn/tokenize", json={"ssn": "900-00-00019"})
+    r = client.post("/ssn/tokenize", json={"ssn": "900-00-00019"}, headers=CALLER)
     assert r.status_code == 400 and "900" not in r.text
-    r = client.post("/ssn/tokenize", json={"ssn": 900000001})  # wrong type, 422
+    r = client.post("/ssn/tokenize", json={"ssn": 900000001}, headers=CALLER)  # wrong type, 422
     assert r.status_code == 422 and "900000001" not in r.text
 
 
 def test_http_reveal_flow(client, store):
-    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
+    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER).json()["ssn_token"]
     store.add_claim(7, token)
     actor = {"X-Actor": "staff-1"}
 
@@ -218,7 +218,7 @@ def test_unconfigured_service_is_503(monkeypatch):
     from demo_app.ssn_api import _ssn_service
 
     _ssn_service.reset()
-    r = TestClient(app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+    r = TestClient(app).post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     _ssn_service.reset()
     assert r.status_code == 503 and r.json() == {"detail": "ssn service unavailable"}
 

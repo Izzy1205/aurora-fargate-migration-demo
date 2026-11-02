@@ -2,7 +2,7 @@
 
 The audit trail lives in audit_event, and CloudWatch can't query the
 database. So the vault writes one JSON line at the moment it commits an
-audited action, refuses a ticket or answers 429. The lines go to the vault
+audited action, refuses a ticket or a tokenize caller, or answers 429. The lines go to the vault
 log group (/ecs/<name_prefix>/ssn-vault) in CloudWatch embedded metric
 format, so CloudWatch turns them into metrics in MigDemo/SsnVault with no
 metric filter or other infrastructure. The alarms in
@@ -14,6 +14,9 @@ token or a ticket. That is the same rule as the audit log lines in
 ssn/service.py.
 
 Metrics (dimension NamePrefix, like the app's ssn_vault_* metrics):
+  ssn_tokenize              a tokenize committed, with its audit row
+  ssn_caller_rejected       a tokenize refused (the 403): no X-Caller, or
+                            one not on the allowlist
   ssn_reveal                a reveal committed, with its audit row
   ssn_ticket_issue          a ticket issue committed, with its audit row
   ssn_ticket_refresh        a ticket refresh committed, with its audit row
@@ -34,6 +37,7 @@ from .ssn.store import REJECT_CLAIM_CLOSED
 from .ssn_vault_client import _emf, events
 
 AUDIT_METRICS = {
+    "ssn.tokenize": "ssn_tokenize",
     "ssn.reveal": "ssn_reveal",
     "ssn.ticket_issue": "ssn_ticket_issue",
     "ssn.ticket_refresh": "ssn_ticket_refresh",
@@ -99,6 +103,24 @@ def log_rate_limited(route: str, bucket: str, limit: int) -> None:
                 "bucket": bucket,
                 "limit": limit,
                 "ssn_rate_limited": 1,
+            },
+            name_prefix(),
+        )
+    )
+
+
+def log_caller_rejected(route: str, category: str) -> None:
+    """A tokenize caller refused. The category is a fixed word, never the
+    header value."""
+    events.warning(
+        _emf(
+            [("ssn_caller_rejected", "Count")],
+            {
+                "level": "WARN",
+                "event": "ssn_caller_rejected",
+                "route": route,
+                "reason": category,
+                "ssn_caller_rejected": 1,
             },
             name_prefix(),
         )

@@ -14,6 +14,7 @@ import pytest
 
 from demo_app.db import DbSettings
 from demo_app.ssn import FakeEncryptor, PostgresVaultStore, SsnTokenService, TicketNotValid
+from conftest import CALLER_NAME  # noqa: E402
 
 DSN = os.environ.get("SSN_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="SSN_TEST_PG_DSN not set")
@@ -88,7 +89,7 @@ def test_vault_role_cannot_update_or_delete(db):
 
 def _claim(db, svc, ssn, status="submitted"):
     """Tokenize, add the claimant and an open claim. Returns (token, claim_id)."""
-    a = svc.tokenize(ssn)
+    a = svc.tokenize(ssn, caller=CALLER_NAME)
     with psycopg.connect(**db) as c:
         cid = c.execute("INSERT INTO claimant (ssn_token, ssn_hmac, first_name, last_name) VALUES (%s, %s, 'Test', 'Person') "
                         "ON CONFLICT (ssn_token) DO UPDATE SET first_name = excluded.first_name RETURNING id",
@@ -150,8 +151,8 @@ def test_ticket_cap_is_enforced_by_the_database(db):
 
 def test_tokenize_and_reveal_against_postgres(db):
     svc = _svc(db)
-    a = svc.tokenize("900-00-0001")
-    assert svc.tokenize("900000001").ssn_token == a.ssn_token
+    a = svc.tokenize("900-00-0001", caller=CALLER_NAME)
+    assert svc.tokenize("900000001", caller=CALLER_NAME).ssn_token == a.ssn_token
     token, claim = _claim(db, svc, "900-00-0001")  # the token is accepted by claimant's CHECK
     assert token == a.ssn_token
     with psycopg.connect(**db) as c:
@@ -173,6 +174,34 @@ def test_tokenize_and_reveal_against_postgres(db):
         svc.reveal(t.ticket, actor="staff-1", reason="again")
     assert len(_audit(db)) == before + 2
     assert calls, "password provider was not used"
+
+
+def test_tokenize_writes_one_audit_row_against_postgres(db):
+    svc = _svc(db)
+    before = len(_audit(db))
+    a = svc.tokenize("900-00-0021", caller=CALLER_NAME)
+    b = svc.tokenize("900000021", caller="wage-loader")
+    assert a.created is True and b.created is False
+    rows = _audit(db)[before:]
+    assert [r[:4] for r in rows] == [(CALLER_NAME, "ssn.tokenize", None, "ssn_vault"),
+                                    ("wage-loader", "ssn.tokenize", None, "ssn_vault")]
+    assert rows[0][4] == rows[1][4]
+    assert '"created": true' in rows[0][5] and '"created": false' in rows[1][5]
+    assert all("900000021" not in r[5] and a.ssn_token not in r[5] and a.ssn_hmac.hex() not in r[5] for r in rows)
+
+
+def test_tokenize_audit_failure_rolls_back_the_vault_row(db):
+    svc = _svc(db)
+    with psycopg.connect(**db) as c:
+        c.execute("REVOKE INSERT ON audit_event FROM ssn_vault_rw")
+    try:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            svc.tokenize("900-00-0022", caller=CALLER_NAME)
+    finally:
+        with psycopg.connect(**db) as c:
+            c.execute("GRANT INSERT ON audit_event TO ssn_vault_rw")
+    # The failed call left no vault row, so this one creates it.
+    assert svc.tokenize("900-00-0022", caller=CALLER_NAME).created is True
 
 
 def test_expired_ticket_is_rejected_by_db_clock(db):
@@ -270,7 +299,7 @@ def _seed_store(conninfo):
 
 def test_seed_claim_as_app_user_is_idempotent(db):
     svc = _svc(db)
-    a = svc.tokenize("900-55-0001")
+    a = svc.tokenize("900-55-0001", caller=CALLER_NAME)
     seed = _seed_store(db)
     first = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
     again = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
@@ -288,7 +317,7 @@ def test_seed_claim_as_app_user_is_idempotent(db):
 
 def test_seed_claim_reuses_an_open_claim_and_replaces_a_closed_one(db):
     svc = _svc(db)
-    a = svc.tokenize("900-55-0002")
+    a = svc.tokenize("900-55-0002", caller=CALLER_NAME)
     seed = _seed_store(db)
     first = seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
     _close(db, first.claim_id)
@@ -300,8 +329,8 @@ def test_seed_claim_reuses_an_open_claim_and_replaces_a_closed_one(db):
 def test_seed_claim_refuses_a_mismatched_token_and_hmac(db):
     from demo_app.demo_seed import SeedConflict
     svc = _svc(db)
-    a = svc.tokenize("900-55-0003")
-    b = svc.tokenize("900-55-0004")
+    a = svc.tokenize("900-55-0003", caller=CALLER_NAME)
+    b = svc.tokenize("900-55-0004", caller=CALLER_NAME)
     seed = _seed_store(db)
     seed.seed_claim(a.ssn_token, a.ssn_hmac, "izzy")
     with pytest.raises(SeedConflict):
@@ -316,7 +345,7 @@ def test_seeded_claim_runs_the_whole_ticket_flow(db):
     """tokenize -> seed (app_user) -> issue -> reveal -> reveal again
     refused -> issue -> refresh -> old ticket dead -> new ticket reveals."""
     svc = _svc(db)
-    a = svc.tokenize("900-55-0005")
+    a = svc.tokenize("900-55-0005", caller=CALLER_NAME)
     claim = _seed_store(db).seed_claim(a.ssn_token, a.ssn_hmac, "izzy").claim_id
     t1 = svc.issue_ticket(a.ssn_token, claim, actor="izzy", reason="demo")
     assert svc.reveal(t1.ticket, actor="izzy", reason="demo")[0] == "900550005"

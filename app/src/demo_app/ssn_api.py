@@ -6,8 +6,10 @@
 /ssn/reveal          POST, ticket in, SSN out, burns the ticket, audited
 /ssn/tickets/refresh POST, ticket in, new ticket out, needs re-auth, audited
 
-Tickets and reveal have a per-actor rate limit (ssn/ratelimit.py) and
-answer 429 over it. Each audited action, refused ticket and 429 also
+Tokenize needs an allowed X-Caller (ssn/callers.py) and is audited.
+Tokenize, tickets and reveal have a per-actor rate limit
+(ssn/ratelimit.py; for tokenize the actor is the caller) and answer 429
+over it. Each audited action, refused ticket or caller and 429 also
 writes a metric line (ssn_events.py).
 
 This is where the token service, the KMS encryptor, the pepper and the
@@ -35,13 +37,15 @@ from .ssn.config import (
     iam_auth_password,
     load_runtime_config,
 )
+from .ssn.callers import CallerPolicy, policy_from_env
 from .ssn.crypto import KmsEncryptor
-from .ssn.ratelimit import REVEAL_BUCKET, TICKETS_BUCKET, SlidingWindowLimiter, limiter_from_env
+from .ssn.ratelimit import REVEAL_BUCKET, TICKETS_BUCKET, TOKENIZE_BUCKET, SlidingWindowLimiter, limiter_from_env
 from .ssn.reauth import HeaderReauthVerifier, ReauthVerifier
 from .ssn.service import (
     ISSUE_ACTION,
     REFRESH_ACTION,
     REVEAL_ACTION,
+    TOKENIZE_ACTION,
     InvalidSsn,
     NoOpenClaim,
     RevealNotAllowed,
@@ -49,7 +53,7 @@ from .ssn.service import (
     TicketNotValid,
 )
 from .ssn.store import PostgresVaultStore
-from .ssn_events import log_audited, log_rate_limited, log_rejected
+from .ssn_events import log_audited, log_caller_rejected, log_rate_limited, log_rejected
 from .web import NO_STORE, SSN_UNAVAILABLE, db_unavailable
 
 log = logging.getLogger("demo_app")
@@ -127,6 +131,16 @@ def get_rate_limiter() -> SlidingWindowLimiter:
 Limiter = Annotated[SlidingWindowLimiter, Depends(get_rate_limiter)]
 
 
+@lru_cache(maxsize=1)
+def get_tokenize_callers() -> CallerPolicy:
+    # The allowlist is a code default, with an env var override, so
+    # shipping this needs no task definition change. See ssn/callers.py.
+    return policy_from_env()
+
+
+Callers = Annotated[CallerPolicy, Depends(get_tokenize_callers)]
+
+
 class TokenizeRequest(BaseModel):
     ssn: str
 
@@ -185,18 +199,34 @@ def _ssn_failed(what: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=SSN_UNAVAILABLE, headers=NO_STORE)
 
 
+CALLER_NOT_ALLOWED = "caller not allowed"
+
+
 @ssn_router.post("/ssn/tokenize")
-def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
-    # TODO: restrict to the sign-up and wage-loader callers (service auth),
-    # and rate limit. Tokenize never returns the SSN, but it is an oracle.
-    # It has no actor, so the per-actor limit in ssn/ratelimit.py does not
-    # apply. The WAF per-IP limit is all it has today.
+def ssn_tokenize(
+    body: TokenizeRequest,
+    svc: SsnService,
+    limiter: Limiter,
+    callers: Callers,
+    x_caller: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    # Tokenize never returns the SSN, but 201 versus 200 says whether the
+    # vault knows it. So only allowed callers, a per-caller limit and an
+    # audit row. X-Caller is client-set, like X-Actor (see ssn/callers.py).
+    decision = callers.check(x_caller)
+    if decision.caller is None:
+        # Same answer for a missing and an unknown caller. The metric line
+        # has the category only, never the header value.
+        log_caller_rejected("/ssn/tokenize", decision.reason)
+        raise HTTPException(status_code=403, detail=CALLER_NOT_ALLOWED, headers=NO_STORE)
+    _check_rate(limiter, TOKENIZE_BUCKET, "/ssn/tokenize", decision.caller)
     try:
-        result = svc.tokenize(body.ssn)
+        result = svc.tokenize(body.ssn, caller=decision.caller)
     except InvalidSsn as exc:
-        raise HTTPException(status_code=400, detail="invalid SSN format") from exc
-    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid SSN format", headers=NO_STORE) from exc
+    except Exception as exc:  # noqa: BLE001 - includes a failed audit write: no token without a row
         raise db_unavailable(exc) from exc
+    log_audited("/ssn/tokenize", TOKENIZE_ACTION)
     return JSONResponse(
         {"ssn_token": result.ssn_token, "ssn_hmac": result.ssn_hmac.hex()},
         status_code=201 if result.created else 200,
