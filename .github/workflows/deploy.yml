@@ -1,15 +1,15 @@
 name: deploy
 
 
-# Deploys one environment, one unit at a time:
-# network, data, app, then observability.
-# Each unit is planned, then the exact saved plan is applied.
+# Deploys testing, the only environment that builds images. infra.yml plans
+# and applies network, data, app, then observability, one unit at a time,
+# each from its exact saved plan.
 # A merge to main deploys testing on its own. The testing-infra and
 # testing-app environments have no required reviewers, so testing applies
 # run without waiting; they only allow the main branch. Reviewer rules live
-# in the GitHub environment settings, not in this file. Production isn't
-# wired up yet. When it is, it will be started by hand and its
-# environments will require a reviewer before each apply.
+# in the GitHub environment settings, not in this file. Stage and production
+# never build: promote.yml copies an image already running in testing (or
+# stage) by digest, and production only runs by hand or from a v* tag.
 # Any plan that deletes or replaces a resource fails (see tg-plan.yml).
 # Teardowns are done by hand with scripts/teardown.sh.
 # The release job pushes the scanned images, sets up the DB logins, runs
@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       env:
-        description: Environment under terraform/environments. stage and production are not deployed yet.
+        description: Only testing builds and deploys here. Stage and production use promote.yml.
         type: choice
         options: [testing]
         default: testing
@@ -120,218 +120,23 @@ jobs:
           path: images.tar
           retention-days: 1
 
-  network-plan:
-    uses: ./.github/workflows/tg-plan.yml
+  # Waits for the scan, so a failed scan never reaches AWS. That means the
+  # network plan starts after the scan finishes, not alongside it.
+  infra:
+    needs: [scan]
+    uses: ./.github/workflows/infra.yml
     permissions:
       contents: read
       id-token: write
     with:
       env: ${{ inputs.env || 'testing' }}
-      unit: network
-
-  network-apply:
-    needs: [network-plan, scan]
-    if: needs.network-plan.outputs.has_changes == 'true'
-    uses: ./.github/workflows/tg-apply.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: network
-      plan_key: ${{ needs.network-plan.outputs.plan_key }}
-      plan_sha256: ${{ needs.network-plan.outputs.plan_sha256 }}
-
-  # Runs after network is applied, or when network had nothing to apply.
-  data-plan:
-    needs: [network-plan, network-apply, scan]
-    if: >-
-      !cancelled() &&
-      needs.network-plan.result == 'success' &&
-      needs.scan.result == 'success' &&
-      contains(fromJSON('["success", "skipped"]'), needs.network-apply.result)
-    uses: ./.github/workflows/tg-plan.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: data
-
-  data-apply:
-    needs: [data-plan, scan]
-    if: >-
-      !cancelled() &&
-      needs.scan.result == 'success' &&
-      needs.data-plan.result == 'success' &&
-      needs.data-plan.outputs.has_changes == 'true'
-    uses: ./.github/workflows/tg-apply.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: data
-      plan_key: ${{ needs.data-plan.outputs.plan_key }}
-      plan_sha256: ${{ needs.data-plan.outputs.plan_sha256 }}
-
-  app-plan:
-    needs: [data-plan, data-apply, scan]
-    if: >-
-      !cancelled() &&
-      needs.data-plan.result == 'success' &&
-      needs.scan.result == 'success' &&
-      contains(fromJSON('["success", "skipped"]'), needs.data-apply.result)
-    uses: ./.github/workflows/tg-plan.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: app
-
-  app-apply:
-    needs: [app-plan, scan]
-    if: >-
-      !cancelled() &&
-      needs.scan.result == 'success' &&
-      needs.app-plan.result == 'success' &&
-      needs.app-plan.outputs.has_changes == 'true'
-    uses: ./.github/workflows/tg-apply.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: app
-      plan_key: ${{ needs.app-plan.outputs.plan_key }}
-      plan_sha256: ${{ needs.app-plan.outputs.plan_sha256 }}
-
-  observability-plan:
-    needs: [app-plan, app-apply, scan]
-    if: >-
-      !cancelled() &&
-      needs.app-plan.result == 'success' &&
-      needs.scan.result == 'success' &&
-      contains(fromJSON('["success", "skipped"]'), needs.app-apply.result)
-    uses: ./.github/workflows/tg-plan.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: observability
-
-  observability-apply:
-    needs: [observability-plan, scan]
-    if: >-
-      !cancelled() &&
-      needs.scan.result == 'success' &&
-      needs.observability-plan.result == 'success' &&
-      needs.observability-plan.outputs.has_changes == 'true'
-    uses: ./.github/workflows/tg-apply.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      env: ${{ inputs.env || 'testing' }}
-      unit: observability
-      plan_key: ${{ needs.observability-plan.outputs.plan_key }}
-      plan_sha256: ${{ needs.observability-plan.outputs.plan_sha256 }}
-
-  # The release job needs these names and IDs. Read with the read-only plan
-  # role after the last apply. The app unit passes through the network values
-  # release needs, so this is the only unit read here.
-  outputs:
-    name: read app outputs
-    needs: [app-plan, app-apply, scan]
-    if: >-
-      !cancelled() &&
-      needs.app-plan.result == 'success' &&
-      needs.scan.result == 'success' &&
-      contains(fromJSON('["success", "skipped"]'), needs.app-apply.result)
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.env || 'testing' }}-infra-plan
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        working-directory: terraform
-        shell: bash
-    env:
-      MIGDEMO_OWNER: ${{ vars.OWNER }}
-      MIGDEMO_BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}
-      MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
-      MIGDEMO_MOCKS_ON_PLAN: "false"
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-      TF_STATE_REGION: ${{ vars.AWS_REGION }}
-      UNIT_DIR: environments/${{ inputs.env || 'testing' }}/app
-    outputs:
-      cluster: ${{ steps.out.outputs.cluster }}
-      service: ${{ steps.out.outputs.service }}
-      app_family: ${{ steps.out.outputs.app_family }}
-      migration_family: ${{ steps.out.outputs.migration_family }}
-      db_logins_family: ${{ steps.out.outputs.db_logins_family }}
-      subnets: ${{ steps.out.outputs.subnets }}
-      migration_sg: ${{ steps.out.outputs.migration_sg }}
-      app_repo: ${{ steps.out.outputs.app_repo }}
-      migration_repo: ${{ steps.out.outputs.migration_repo }}
-      migration_log_group: ${{ steps.out.outputs.migration_log_group }}
-      app_url: ${{ steps.out.outputs.app_url }}
-      desired_count: ${{ steps.out.outputs.desired_count }}
-      vault_service: ${{ steps.out.outputs.vault_service }}
-      vault_family: ${{ steps.out.outputs.vault_family }}
-      vault_container: ${{ steps.out.outputs.vault_container }}
-      vault_desired_count: ${{ steps.out.outputs.vault_desired_count }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - uses: ./.github/actions/setup-terragrunt
-
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: gha-outputs-${{ github.run_id }}
-          mask-aws-account-id: false  # outputs below are passed between jobs
-
-      - name: export outputs
-        id: out
-        run: |
-          terragrunt run --working-dir "$UNIT_DIR" --non-interactive --tf-forward-stdout \
-            -- output -json > "$RUNNER_TEMP/outputs.json"
-          o() { jq -er --arg k "$1" '.[$k].value' "$RUNNER_TEMP/outputs.json"; }
-          {
-            echo "cluster=$(o ecs_cluster_name)"
-            echo "service=$(o app_service_name)"
-            echo "app_family=$(o app_task_family)"
-            echo "migration_family=$(o migration_task_family)"
-            echo "db_logins_family=$(o db_logins_task_family)"
-            echo "subnets=$(o private_subnet_ids_csv)"
-            echo "migration_sg=$(o migration_security_group_id)"
-            echo "app_repo=$(o app_ecr_repository)"
-            echo "migration_repo=$(o migration_ecr_repository)"
-            echo "migration_log_group=$(o migration_log_group)"
-            echo "app_url=$(o app_url)"
-            echo "desired_count=$(o app_desired_count)"
-            echo "vault_service=$(o ssn_vault_service_name)"
-            echo "vault_family=$(o ssn_vault_task_family)"
-            echo "vault_container=$(o ssn_vault_container_name)"
-            echo "vault_desired_count=$(o ssn_vault_desired_count)"
-          } >> "$GITHUB_OUTPUT"
 
   release:
     name: build, migrate, deploy
-    needs: [outputs, scan]
+    needs: [infra, scan]
     if: >-
       !cancelled() &&
-      needs.outputs.result == 'success' &&
+      needs.infra.result == 'success' &&
       needs.scan.result == 'success'
     runs-on: ubuntu-latest
     environment: ${{ inputs.env || 'testing' }}-app
@@ -339,12 +144,18 @@ jobs:
       contents: read
       id-token: write
     env:
-      CLUSTER: ${{ needs.outputs.outputs.cluster }}
-      SERVICE: ${{ needs.outputs.outputs.service }}
+      CLUSTER: ${{ needs.infra.outputs.cluster }}
+      SERVICE: ${{ needs.infra.outputs.service }}
       TAG: ${{ github.sha }}
-      APP_DESIRED_COUNT: ${{ needs.outputs.outputs.desired_count }}  # app_desired_count in env.hcl
+      APP_DESIRED_COUNT: ${{ needs.infra.outputs.desired_count }}  # app_desired_count in env.hcl
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/check-role
+        with:
+          role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          env: ${{ inputs.env || 'testing' }}
+          kind: deploy
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -367,8 +178,8 @@ jobs:
         id: push
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          APP_REPO: ${{ needs.outputs.outputs.app_repo }}
-          MIGRATION_REPO: ${{ needs.outputs.outputs.migration_repo }}
+          APP_REPO: ${{ needs.infra.outputs.app_repo }}
+          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
           APP_IMAGE_ID: ${{ needs.scan.outputs.app_image_id }}
           MIGRATE_IMAGE_ID: ${{ needs.scan.outputs.migrate_image_id }}
         run: |
@@ -422,63 +233,24 @@ jobs:
             echo "- migrate: \`$MIGRATION_REPO:$TAG\` = \`$migrate_digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Creates the app and Flyway logins, or resets their passwords to what
-      # is in their secrets, and hands the tables to the Flyway login. Safe
-      # to re-run. This is the only task that reads the master secret.
-      - name: set up DB logins in the private subnets
-        env:
-          MIGRATE_IMAGE: ${{ steps.push.outputs.migrate_image }}
-          DB_LOGINS_FAMILY: ${{ needs.outputs.outputs.db_logins_family }}
-          SUBNETS: ${{ needs.outputs.outputs.subnets }}
-          SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
-          LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
-          CONTAINER: db-logins
-        run: |
-          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$DB_LOGINS_FAMILY" db-logins "$MIGRATE_IMAGE" "$TAG")
-          export TASK_DEFINITION
-          bash scripts/run-migration.sh
-
-      # Schema first. Expand-only, so the old code is fine with it.
-      - name: run Flyway migration task in the private subnets
-        env:
-          MIGRATE_IMAGE: ${{ steps.push.outputs.migrate_image }}
-          MIGRATION_FAMILY: ${{ needs.outputs.outputs.migration_family }}
-          SUBNETS: ${{ needs.outputs.outputs.subnets }}
-          SECURITY_GROUP: ${{ needs.outputs.outputs.migration_sg }}
-          LOG_GROUP: ${{ needs.outputs.outputs.migration_log_group }}
-        run: |
-          TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$MIGRATE_IMAGE" "$TAG")
-          export TASK_DEFINITION
-          bash scripts/run-migration.sh
-
-      # Only reached if the migration exited 0.
-      - name: deploy app
-        env:
-          APP_IMAGE: ${{ steps.push.outputs.app_image }}
-          APP_FAMILY: ${{ needs.outputs.outputs.app_family }}
-          APP_URL: ${{ needs.outputs.outputs.app_url }}
-        run: |
-          task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$APP_IMAGE" "$TAG")
-          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
-            --task-definition "$task_def" --desired-count "$APP_DESIRED_COUNT" >/dev/null
-          echo "Waiting for $SERVICE to be stable on $task_def ($APP_IMAGE) with $APP_DESIRED_COUNT tasks"
-          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
-          echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      # Same image as the app, started in SSN vault mode. Private subnets, no
-      # load balancer. Rolled after the app so a vault problem never blocks
-      # the app deploy.
-      - name: deploy SSN vault
-        env:
-          APP_IMAGE: ${{ steps.push.outputs.app_image }}
-          VAULT_SERVICE: ${{ needs.outputs.outputs.vault_service }}
-          VAULT_FAMILY: ${{ needs.outputs.outputs.vault_family }}
-          VAULT_CONTAINER: ${{ needs.outputs.outputs.vault_container }}
-          VAULT_DESIRED_COUNT: ${{ needs.outputs.outputs.vault_desired_count }}  # ssn_vault_desired_count in env.hcl
-        run: |
-          task_def=$(bash scripts/register-task-def.sh "$VAULT_FAMILY" "$VAULT_CONTAINER" "$APP_IMAGE" "$TAG")
-          aws ecs update-service --cluster "$CLUSTER" --service "$VAULT_SERVICE" \
-            --task-definition "$task_def" --desired-count "$VAULT_DESIRED_COUNT" >/dev/null
-          echo "Waiting for $VAULT_SERVICE to be stable on $task_def with $VAULT_DESIRED_COUNT tasks"
-          aws ecs wait services-stable --cluster "$CLUSTER" --services "$VAULT_SERVICE"
-          echo "SSN vault deployed: $VAULT_SERVICE ($VAULT_DESIRED_COUNT tasks, private only)" | tee -a "$GITHUB_STEP_SUMMARY"
+      # DB logins, Flyway, app, then the SSN vault. Same steps promote.yml
+      # runs for stage and production.
+      - uses: ./.github/actions/roll-out
+        with:
+          tag: ${{ env.TAG }}
+          app-image: ${{ steps.push.outputs.app_image }}
+          migrate-image: ${{ steps.push.outputs.migrate_image }}
+          cluster: ${{ env.CLUSTER }}
+          service: ${{ env.SERVICE }}
+          app-family: ${{ needs.infra.outputs.app_family }}
+          app-desired-count: ${{ env.APP_DESIRED_COUNT }}
+          app-url: ${{ needs.infra.outputs.app_url }}
+          migration-family: ${{ needs.infra.outputs.migration_family }}
+          db-logins-family: ${{ needs.infra.outputs.db_logins_family }}
+          subnets: ${{ needs.infra.outputs.subnets }}
+          migration-sg: ${{ needs.infra.outputs.migration_sg }}
+          migration-log-group: ${{ needs.infra.outputs.migration_log_group }}
+          vault-service: ${{ needs.infra.outputs.vault_service }}
+          vault-family: ${{ needs.infra.outputs.vault_family }}
+          vault-container: ${{ needs.infra.outputs.vault_container }}
+          vault-desired-count: ${{ needs.infra.outputs.vault_desired_count }}

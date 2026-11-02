@@ -1,0 +1,34 @@
+name: check-role
+description: Fail unless the role ARN about to be assumed belongs to this environment.
+
+# Role ARNs come from GitHub variables. Stage and production set theirs as
+# environment variables, which override the repo-level testing values. If an
+# environment variable is missing, the repo-level testing ARN would leak
+# through. Trust would still refuse it (each role trusts only its own
+# environment's subject), but this fails earlier with a clear message.
+inputs:
+  role-arn:
+    description: The ARN about to be assumed.
+    required: true
+  env:
+    description: testing, stage or production.
+    required: true
+  kind:
+    description: plan, terraform or deploy.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: check role belongs to ${{ inputs.env }}
+      shell: bash
+      env:
+        ROLE_ARN: ${{ inputs.role-arn }}
+        WANT_ENV: ${{ inputs.env }}
+        KIND: ${{ inputs.kind }}
+      run: |
+        re="^arn:aws:iam::[0-9]{12}:role/[a-z0-9]+-${WANT_ENV}-github-${KIND}\$"
+        if [[ ! "$ROLE_ARN" =~ $re ]]; then
+          echo "::error::Role for ${WANT_ENV} ${KIND} is '${ROLE_ARN:-<unset>}'. Set it as an environment variable on the ${WANT_ENV}-* GitHub environment." >&2
+          exit 1
+        fi

@@ -1,0 +1,316 @@
+name: promote
+
+# Promotes one commit's images, by digest, from the environment below:
+#   testing -> stage -> production
+# Nothing is rebuilt. The source env's image digest (the bytes Trivy scanned
+# in deploy.yml) is copied into the target env's repos under the same commit
+# SHA tag, the copy is checked to have the identical digest, and every task
+# definition points at repo@sha256:<digest>. The SHA tag is shown alongside
+# for people.
+#
+# A commit can only be promoted if it is on main and is what the source env's
+# app service is running right now, so production only ever gets what ran in
+# stage, and stage only what ran in testing.
+#
+# Never automatic. Stage: manual dispatch. Production: manual dispatch or a
+# vX.Y.Z tag push. Every production-* GitHub environment requires a reviewer,
+# so each production plan, apply and the release wait for approval. Reviewer
+# rules live in the GitHub environment settings, not in this file.
+#
+# Infra for the target is planned and applied from the promoted commit
+# (infra.yml), with the same delete gate as testing.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to promote into. Stage takes from testing, production from stage.
+        type: choice
+        options: [stage, production]
+        required: true
+      sha:
+        description: Full 40-character commit SHA to promote. Must be running in the source env.
+        type: string
+        required: true
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+run-name: promote ${{ inputs.sha || github.sha }} to ${{ inputs.target || 'production' }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.target || 'production' }}
+  cancel-in-progress: false  # never cancel a half-finished apply or migration
+
+jobs:
+  # No credentials. Works out target, source and commit, and refuses anything
+  # that is not a main commit started from main or a release tag.
+  setup:
+    name: check the request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      EVENT: ${{ github.event_name }}
+      REF: ${{ github.ref }}
+      INPUT_TARGET: ${{ inputs.target }}
+      INPUT_SHA: ${{ inputs.sha }}
+    outputs:
+      target: ${{ steps.req.outputs.target }}
+      source: ${{ steps.req.outputs.source }}
+      sha: ${{ steps.req.outputs.sha }}
+    steps:
+      - name: work out target and commit
+        id: req
+        run: |
+          case "$EVENT" in
+            push)
+              if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Only vX.Y.Z tags promote, got $REF" >&2; exit 1
+              fi
+              target=production
+              sha=$GITHUB_SHA
+              ;;
+            workflow_dispatch)
+              if [[ "$REF" != refs/heads/main ]]; then
+                echo "::error::Start promote from main, not $REF" >&2; exit 1
+              fi
+              target=$INPUT_TARGET
+              sha=$INPUT_SHA
+              ;;
+            *) echo "::error::unexpected event $EVENT" >&2; exit 1 ;;
+          esac
+          case "$target" in
+            stage) source=testing ;;
+            production) source=stage ;;
+            *) echo "::error::unknown target '$target'" >&2; exit 1 ;;
+          esac
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character lowercase commit SHA" >&2; exit 1
+          fi
+          {
+            echo "target=$target"
+            echo "source=$source"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: commit is on main and has the promotion workflow
+        env:
+          SHA: ${{ steps.req.outputs.sha }}
+        run: |
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main" >&2; exit 1
+          fi
+          # infra.yml and release check out this commit and use its local
+          # actions, so it must be from after promotion was added.
+          for f in .github/actions/check-role/action.yml .github/actions/roll-out/action.yml; do
+            if ! git cat-file -e "$SHA:$f" 2>/dev/null; then
+              echo "::error::$SHA has no $f. Promote a newer commit." >&2; exit 1
+            fi
+          done
+          echo "Promoting \`$SHA\` ($(git log -1 --format=%s "$SHA"))" >> "$GITHUB_STEP_SUMMARY"
+
+  # Read only, with the target's plan role (ReadOnlyAccess). Fails before any
+  # target plan if the commit's images aren't what the source env runs.
+  resolve:
+    name: resolve source digests
+    needs: [setup]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.target }}-infra-plan
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET: ${{ needs.setup.outputs.target }}
+      SOURCE: ${{ needs.setup.outputs.source }}
+      SHA: ${{ needs.setup.outputs.sha }}
+      PROJECT: migdemo  # local.project in terraform/root.hcl
+    outputs:
+      app_digest: ${{ steps.src.outputs.app_digest }}
+      migrate_digest: ${{ steps.src.outputs.migrate_digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+
+      - uses: ./.github/actions/check-role
+        with:
+          role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          env: ${{ needs.setup.outputs.target }}
+          kind: plan
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-resolve-${{ github.run_id }}
+
+      # Names follow modules/registry and modules/ecs: <project>-<env>/app,
+      # <project>-<env>-cluster, <project>-<env>-app, container "app".
+      - name: source digests, and the source app runs them
+        id: src
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          p="${PROJECT}-${SOURCE}"
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          digest_of() {
+            local repo=$1 d
+            d=$(aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$SHA" \
+              --query 'imageDetails[0].imageDigest' --output text) || {
+              echo "::error::$repo has no image tagged $SHA. Deploy it to $SOURCE first." >&2; return 1; }
+            if [[ ! "$d" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "::error::bad digest for $repo:$SHA: $d" >&2; return 1
+            fi
+            echo "$d"
+          }
+          app_digest=$(digest_of "$p/app")
+          migrate_digest=$(digest_of "$p/migrate")
+
+          # One settled deployment, and its app container is this digest.
+          svc=$(aws ecs describe-services --cluster "$p-cluster" --services "$p-app" --output json)
+          deployments=$(jq '.services[0].deployments | length' <<<"$svc")
+          rollout=$(jq -r '.services[0].deployments[0].rolloutState' <<<"$svc")
+          if [[ "$deployments" != 1 || "$rollout" != COMPLETED ]]; then
+            echo "::error::$p-app is mid-deployment ($deployments deployments, $rollout). Wait for it to settle." >&2
+            exit 1
+          fi
+          td=$(jq -r '.services[0].taskDefinition' <<<"$svc")
+          live=$(aws ecs describe-task-definition --task-definition "$td" \
+            --query "taskDefinition.containerDefinitions[?name=='app'].image | [0]" --output text)
+          want="$registry/$p/app@$app_digest"
+          if [[ "$live" != "$want" ]]; then
+            echo "::error::$SOURCE runs $live, not $want. Only what runs in $SOURCE can go to $TARGET." >&2
+            exit 1
+          fi
+          {
+            echo "app_digest=$app_digest"
+            echo "migrate_digest=$migrate_digest"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Promoting ${SHA::7}: ${SOURCE} -> ${TARGET}"
+            echo "- app: \`$p/app:$SHA\` = \`$app_digest\` (live in $SOURCE)"
+            echo "- migrate: \`$p/migrate:$SHA\` = \`$migrate_digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  infra:
+    needs: [setup, resolve]
+    uses: ./.github/workflows/infra.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      env: ${{ needs.setup.outputs.target }}
+      ref: ${{ needs.setup.outputs.sha }}
+
+  release:
+    name: copy by digest, migrate, deploy
+    needs: [setup, resolve, infra]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.setup.outputs.target }}-app
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET: ${{ needs.setup.outputs.target }}
+      SOURCE: ${{ needs.setup.outputs.source }}
+      SHA: ${{ needs.setup.outputs.sha }}
+      PROJECT: migdemo  # local.project in terraform/root.hcl
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+
+      - uses: ./.github/actions/check-role
+        with:
+          role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          env: ${{ needs.setup.outputs.target }}
+          kind: deploy
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-promote-${{ github.run_id }}
+
+      - name: ECR login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # skopeo copies the manifest byte for byte (--preserve-digests fails
+      # rather than rewrite it), so the target digest is the scanned one.
+      # Source and target repos are in the same registry, so the one ECR
+      # login above covers both. skopeo ships on GitHub's Ubuntu runners.
+      - name: copy images by digest
+        id: copy
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          APP_REPO: ${{ needs.infra.outputs.app_repo }}
+          MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
+          APP_DIGEST: ${{ needs.resolve.outputs.app_digest }}
+          MIGRATE_DIGEST: ${{ needs.resolve.outputs.migrate_digest }}
+        run: |
+          command -v skopeo >/dev/null || { echo "::error::skopeo not on this runner" >&2; exit 1; }
+          src="${PROJECT}-${SOURCE}"
+          tag_digest() {
+            aws ecr describe-images --repository-name "$1" --image-ids imageTag="$SHA" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true
+          }
+          copy_once() {
+            local src_repo=$1 dst_repo=$2 digest=$3 have
+            have=$(tag_digest "$dst_repo")
+            if [[ -n "$have" && "$have" != None ]]; then
+              # Tags are immutable. A re-run finds the earlier copy.
+              if [[ "$have" != "$digest" ]]; then
+                echo "::error::$dst_repo:$SHA is $have, not the source digest $digest" >&2; return 1
+              fi
+              echo "::notice::$dst_repo:$SHA already holds $digest"
+              return
+            fi
+            skopeo copy --all --preserve-digests --retry-times 3 \
+              "docker://$REGISTRY/$src_repo@$digest" "docker://$REGISTRY/$dst_repo:$SHA"
+            have=$(tag_digest "$dst_repo")
+            if [[ "$have" != "$digest" ]]; then
+              echo "::error::copied $dst_repo:$SHA is $have, expected $digest" >&2; return 1
+            fi
+          }
+          copy_once "$src/app" "$APP_REPO" "$APP_DIGEST"
+          copy_once "$src/migrate" "$MIGRATION_REPO" "$MIGRATE_DIGEST"
+          {
+            echo "app_image=$REGISTRY/$APP_REPO@$APP_DIGEST"
+            echo "migrate_image=$REGISTRY/$MIGRATION_REPO@$MIGRATE_DIGEST"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Images in ${TARGET} for ${SHA::7}"
+            echo "- app: \`$APP_REPO:$SHA\` = \`$APP_DIGEST\` (same digest as $SOURCE)"
+            echo "- migrate: \`$MIGRATION_REPO:$SHA\` = \`$MIGRATE_DIGEST\` (same digest as $SOURCE)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Same steps as deploy.yml: DB logins, Flyway, app, then the SSN vault.
+      # The first deploy of an env leaves the vault unhealthy until its SSN
+      # pepper is set by hand (README section 4).
+      - uses: ./.github/actions/roll-out
+        with:
+          tag: ${{ needs.setup.outputs.sha }}
+          app-image: ${{ steps.copy.outputs.app_image }}
+          migrate-image: ${{ steps.copy.outputs.migrate_image }}
+          cluster: ${{ needs.infra.outputs.cluster }}
+          service: ${{ needs.infra.outputs.service }}
+          app-family: ${{ needs.infra.outputs.app_family }}
+          app-desired-count: ${{ needs.infra.outputs.desired_count }}
+          app-url: ${{ needs.infra.outputs.app_url }}
+          migration-family: ${{ needs.infra.outputs.migration_family }}
+          db-logins-family: ${{ needs.infra.outputs.db_logins_family }}
+          subnets: ${{ needs.infra.outputs.subnets }}
+          migration-sg: ${{ needs.infra.outputs.migration_sg }}
+          migration-log-group: ${{ needs.infra.outputs.migration_log_group }}
+          vault-service: ${{ needs.infra.outputs.vault_service }}
+          vault-family: ${{ needs.infra.outputs.vault_family }}
+          vault-container: ${{ needs.infra.outputs.vault_container }}
+          vault-desired-count: ${{ needs.infra.outputs.vault_desired_count }}
