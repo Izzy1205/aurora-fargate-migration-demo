@@ -33,7 +33,7 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The token service that fills them in is described in section 8.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 24 CloudWatch alarms and a dashboard, including an
+- Watches it all with 28 CloudWatch alarms and a dashboard, including an
   availability SLO with burn rate alerts and a p95 latency alarm. It also
   emails if a backup job fails.
 
@@ -162,6 +162,24 @@ Endpoints:
   `rate-limit-ssn-tickets`, paths starting with `/ssn/tickets`, which
   covers issue and refresh). They slow a script walking tickets; the
   actor, reason and audit row are still the real gate.
+- The vault adds a limit per actor (`ssn/ratelimit.py`). The WAF can't
+  tell two staff behind one office IP apart, and it can't stop one actor
+  spread over many IPs. The vault only sees the app's IP, so it keys on
+  `X-Actor` instead. Each actor gets 5 reveals and 10 ticket calls (issue
+  and refresh together) in any 60 seconds, then a 429
+  `{"detail": "too many requests"}` with `Retry-After` and `no-store`.
+  Every request with an actor and a reason counts, 404s included. A 429
+  doesn't count. Tokenize has no actor, so only the WAF limits it.
+- The limit is kept in memory in each vault task. With 2 vault tasks an
+  actor can get up to twice the limit, a little more during a deploy, and
+  a task restart clears the count. `X-Actor` is a header for now, so a
+  caller who changes it every request gets past this limit; the WAF limit
+  by IP still applies. Both get fixed by the verified identity below.
+- `SSN_REVEAL_LIMIT_PER_MINUTE` and `SSN_TICKET_LIMIT_PER_MINUTE` change
+  the limits (1 to 1000). A bad value falls back to the default, so a
+  typo can't turn the limit off. Neither is set today. Setting one is a
+  task definition change, which the pipeline blocks as a replace (see
+  "Why it's built this way"), so change the default in code instead.
 - All of them answer 503 `ssn service unavailable` if anything below is missing
   or failing, and never echo input. Responses are `no-store`.
 
@@ -195,6 +213,36 @@ First checks when either fires:
 3. The vault security group still allows 8080 from the app security group.
 4. Cloud Map: `ssn-vault.<name_prefix>.internal` has a healthy instance
    for each running task.
+
+SSN audit alarms (same file, same topic). The vault writes a metric line
+as it commits each audit row, refuses a ticket or answers 429
+(`app/src/demo_app/ssn_events.py`). The lines carry the route and a
+category, never the actor, a ticket, a token or an SSN. All are in
+`MigDemo/SsnVault`, dimension `NamePrefix`, summed over 5 minutes across
+all vault tasks:
+- `<name_prefix>-ssn-reveals-high`: at least 30 `ssn_reveal` (threshold
+  `ssn_reveals_count`).
+- `<name_prefix>-ssn-ticket-rejections-high`: at least 10
+  `ssn_ticket_rejected` (threshold `ssn_ticket_rejections_count`). That
+  is every 404 on reveal and refresh, and every ticket asked for a claim
+  that isn't open.
+- `<name_prefix>-ssn-closed-claim-attempt`: at least one
+  `ssn_closed_claim_attempt`, a reveal or refresh with a ticket whose
+  claim has closed.
+- `<name_prefix>-ssn-rate-limited`: at least one `ssn_rate_limited`, a
+  429 from the vault's per-actor limit. The WAF's own 429s show up in the
+  WAF metrics instead.
+
+First checks when one fires:
+1. `audit_event` has the who and why. For example, reveals in the last
+   hour by actor:
+   `SELECT actor, count(*) FROM audit_event WHERE action = 'ssn.reveal' AND occurred_at > now() - interval '1 hour' GROUP BY actor ORDER BY 2 DESC;`
+2. The vault log, `/ecs/<name_prefix>/ssn-vault`. `ssn_ticket_rejected`
+   lines have a `reason` (`unknown`, `malformed`, `expired`, `used`,
+   `revoked`, `claim_closed`, `not_holder` or `no_open_claim`).
+   `ssn_rate_limited` lines have the `bucket` and the `limit`.
+3. Refusals and 429s have no audit row, and the logs never name the
+   actor. Line their times up with the WAF logs to find the client IP.
 
 How the vault finds its key, pepper and login:
 Nothing comes from the task definition. The first `/ssn` request works it
@@ -335,8 +383,11 @@ pepper secret and IAM: `terraform/modules/ssn_vault`.
 Not done yet:
 - Actor from the verified identity (ALB OIDC or Cognito) and a "may
   reveal" role check, instead of a header.
-- A per-actor reveal limit in the app, and two-person approval for bulk
-  reveal. The WAF only limits by IP.
+- Two-person approval for bulk reveal.
+- A shared store for the per-actor limit (DynamoDB or ElastiCache), so it
+  is exact across vault tasks and survives a restart.
+- A closed claim on ticket issue counts as `no_open_claim`, not
+  `claim_closed`. Telling them apart needs a store change.
 - A key rotation re-encrypt job (rows record their key ARN).
 - Real re-auth for refresh (identity provider step-up), replacing the
   header placeholder.

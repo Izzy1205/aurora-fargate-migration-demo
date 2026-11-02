@@ -6,6 +6,10 @@
 /ssn/reveal          POST, ticket in, SSN out, burns the ticket, audited
 /ssn/tickets/refresh POST, ticket in, new ticket out, needs re-auth, audited
 
+Tickets and reveal have a per-actor rate limit (ssn/ratelimit.py) and
+answer 429 over it. Each audited action, refused ticket and 429 also
+writes a metric line (ssn_events.py).
+
 This is where the token service, the KMS encryptor, the pepper and the
 ssn_vault_login database connection are built. The app (demo_app.main)
 never imports it; its /ssn routes only forward to the vault.
@@ -32,9 +36,20 @@ from .ssn.config import (
     load_runtime_config,
 )
 from .ssn.crypto import KmsEncryptor
+from .ssn.ratelimit import REVEAL_BUCKET, TICKETS_BUCKET, SlidingWindowLimiter, limiter_from_env
 from .ssn.reauth import HeaderReauthVerifier, ReauthVerifier
-from .ssn.service import InvalidSsn, NoOpenClaim, RevealNotAllowed, SsnTokenService, TicketNotValid
+from .ssn.service import (
+    ISSUE_ACTION,
+    REFRESH_ACTION,
+    REVEAL_ACTION,
+    InvalidSsn,
+    NoOpenClaim,
+    RevealNotAllowed,
+    SsnTokenService,
+    TicketNotValid,
+)
 from .ssn.store import PostgresVaultStore
+from .ssn_events import log_audited, log_rate_limited, log_rejected
 from .web import NO_STORE, SSN_UNAVAILABLE, db_unavailable
 
 log = logging.getLogger("demo_app")
@@ -98,6 +113,16 @@ def get_reauth_verifier() -> ReauthVerifier:
 Reauth = Annotated[ReauthVerifier, Depends(get_reauth_verifier)]
 
 
+@lru_cache(maxsize=1)
+def get_rate_limiter() -> SlidingWindowLimiter:
+    # One per vault process. Limits come from env vars with safe defaults,
+    # so shipping this needs no task definition change.
+    return limiter_from_env()
+
+
+Limiter = Annotated[SlidingWindowLimiter, Depends(get_rate_limiter)]
+
+
 class TokenizeRequest(BaseModel):
     ssn: str
 
@@ -120,6 +145,7 @@ class RefreshRequest(BaseModel):
 
 
 TICKET_GONE = "ticket not found or no longer valid"
+TOO_MANY = "too many requests"
 
 
 def _require_actor_and_reason(x_actor: str | None, reason: str | None) -> None:
@@ -130,6 +156,19 @@ def _require_actor_and_reason(x_actor: str | None, reason: str | None) -> None:
         raise HTTPException(status_code=401, detail="actor required", headers=NO_STORE)
     if not (reason or "").strip():
         raise HTTPException(status_code=400, detail="reason required", headers=NO_STORE)
+
+
+def _check_rate(limiter: SlidingWindowLimiter, bucket: str, route: str, actor: str) -> None:
+    # After the actor check, so the key is a real actor. Counts the request
+    # whether it then succeeds or not; a 429 itself doesn't count.
+    d = limiter.check(bucket, actor.strip())
+    if not d.allowed:
+        log_rate_limited(route, bucket, d.limit)
+        raise HTTPException(
+            status_code=429,
+            detail=TOO_MANY,
+            headers={**NO_STORE, "Retry-After": str(d.retry_after)},
+        )
 
 
 def _ticket_body(t: Any) -> dict[str, Any]:
@@ -146,6 +185,8 @@ def _ssn_failed(what: str, exc: Exception) -> HTTPException:
 def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
     # TODO: restrict to the sign-up and wage-loader callers (service auth),
     # and rate limit. Tokenize never returns the SSN, but it is an oracle.
+    # It has no actor, so the per-actor limit in ssn/ratelimit.py does not
+    # apply. The WAF per-IP limit is all it has today.
     try:
         result = svc.tokenize(body.ssn)
     except InvalidSsn as exc:
@@ -163,17 +204,21 @@ def ssn_tokenize(body: TokenizeRequest, svc: SsnService) -> JSONResponse:
 def ssn_issue_ticket(
     body: IssueTicketRequest,
     svc: SsnService,
+    limiter: Limiter,
     x_actor: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     _require_actor_and_reason(x_actor, body.reason)
+    _check_rate(limiter, TICKETS_BUCKET, "/ssn/tickets", x_actor or "")
     try:
         t = svc.issue_ticket(body.ssn_token, body.claim_id, actor=x_actor or "", reason=body.reason or "")
     except NoOpenClaim as exc:
+        log_rejected("/ssn/tickets", "no_open_claim")
         raise HTTPException(status_code=404, detail="no open claim for this token", headers=NO_STORE) from exc
     except RevealNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
     except Exception as exc:  # noqa: BLE001
         raise _ssn_failed("ticket issue", exc) from exc
+    log_audited("/ssn/tickets", ISSUE_ACTION)
     return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
 
 
@@ -181,18 +226,22 @@ def ssn_issue_ticket(
 def ssn_reveal(
     body: RevealRequest,
     svc: SsnService,
+    limiter: Limiter,
     x_actor: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     _require_actor_and_reason(x_actor, body.reason)
+    _check_rate(limiter, REVEAL_BUCKET, "/ssn/reveal", x_actor or "")
     try:
         ssn, row, t = svc.reveal(body.ticket, actor=x_actor or "", reason=body.reason or "")
     except TicketNotValid as exc:
         # Unknown, expired, used, revoked and closed claim all look the same.
+        log_rejected("/ssn/reveal", exc.category)
         raise HTTPException(status_code=404, detail=TICKET_GONE, headers=NO_STORE) from exc
     except RevealNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
     except Exception as exc:  # noqa: BLE001 - no audit row, no SSN
         raise _ssn_failed("reveal", exc) from exc
+    log_audited("/ssn/reveal", REVEAL_ACTION)
     return JSONResponse({"ssn_token": row.ssn_token, "claim_id": t.claim_id, "ssn": ssn}, headers=NO_STORE)
 
 
@@ -202,19 +251,23 @@ def ssn_refresh_ticket(
     request: Request,
     svc: SsnService,
     reauth: Reauth,
+    limiter: Limiter,
     x_actor: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     _require_actor_and_reason(x_actor, body.reason)
+    _check_rate(limiter, TICKETS_BUCKET, "/ssn/tickets/refresh", x_actor or "")
     if not reauth.verify(x_actor or "", request.headers):
         raise HTTPException(status_code=401, detail="re-authentication required", headers=NO_STORE)
     try:
         t = svc.refresh(body.ticket, actor=x_actor or "", reason=body.reason or "")
     except TicketNotValid as exc:
+        log_rejected("/ssn/tickets/refresh", exc.category)
         raise HTTPException(status_code=404, detail=TICKET_GONE, headers=NO_STORE) from exc
     except RevealNotAllowed as exc:
         raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from exc
     except Exception as exc:  # noqa: BLE001
         raise _ssn_failed("ticket refresh", exc) from exc
+    log_audited("/ssn/tickets/refresh", REFRESH_ACTION)
     return JSONResponse(_ticket_body(t), status_code=201, headers=NO_STORE)
 
 

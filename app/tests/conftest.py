@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from demo_app import vault
 from demo_app.main import app
-from demo_app.ssn_api import get_reauth_verifier, get_ssn_service
+from demo_app.ssn_api import get_rate_limiter, get_reauth_verifier, get_ssn_service
 from demo_app.ssn_vault_client import get_vault_client
 from demo_app.ssn import FakeEncryptor, HeaderReauthVerifier, SsnTokenService
 from demo_app.ssn.store import (
@@ -139,6 +139,14 @@ def no_vault_by_default():
     app.dependency_overrides[get_vault_client] = lambda: None
     yield
     app.dependency_overrides.pop(get_vault_client, None)
+
+
+@pytest.fixture(autouse=True)
+def fresh_rate_limiter():
+    """Each test starts with an empty per-actor rate limit."""
+    get_rate_limiter.cache_clear()
+    yield
+    get_rate_limiter.cache_clear()
 
 
 @pytest.fixture

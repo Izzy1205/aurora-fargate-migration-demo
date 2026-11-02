@@ -52,7 +52,12 @@ class TokenNotFound(LookupError):
 
 class TicketNotValid(LookupError):
     """Unknown, expired, used, revoked, or its claim is closed. One error
-    for all of them, so a caller can't probe which."""
+    for all of them, so a caller can't probe which. category says why, for
+    logs and metrics only; the HTTP answer is the same for every one."""
+
+    def __init__(self, category: str = "malformed") -> None:
+        super().__init__("ticket not valid")
+        self.category = category
 
 
 class NoOpenClaim(LookupError):
@@ -197,7 +202,7 @@ class SsnTokenService:
         except TicketRejected as exc:
             # The category only: no ticket, no actor.
             log.info("ssn reveal refused reason=%s", exc.category)
-            raise TicketNotValid() from exc
+            raise TicketNotValid(exc.category) from exc
         log.info("ssn revealed")
         return result
 
@@ -229,6 +234,6 @@ class SsnTokenService:
             row = self._store.refresh_ticket(ticket, actor, new_ticket(), TICKET_TTL_HOURS, audit)
         except TicketRejected as exc:
             log.info("ssn ticket refresh refused reason=%s", exc.category)
-            raise TicketNotValid() from exc
+            raise TicketNotValid(exc.category) from exc
         log.info("ssn ticket refreshed")
         return row
