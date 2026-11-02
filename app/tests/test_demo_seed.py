@@ -17,6 +17,7 @@ from demo_app.demo_seed import (
 )
 from demo_app.ssn import SsnTokenService, FakeEncryptor
 from demo_app.ssn.config import METADATA_ENV, NAME_PREFIX_ENV, SsnConfigError
+from conftest import CALLER  # noqa: E402
 
 FARGATE = "http://169.254.170.2/v4/abc"
 TOKEN = "tok_" + "A" * 32
@@ -280,7 +281,7 @@ def test_seed_then_ticket_flow_with_fakes(monkeypatch, store):
     try:
         # /ssn on the vault app (the app only forwards), /demo on the app.
         c = TestClient(vault.app)
-        tok = c.post("/ssn/tokenize", json={"ssn": "900-12-3456"}).json()
+        tok = c.post("/ssn/tokenize", json={"ssn": "900-12-3456"}, headers=CALLER).json()
         s = TestClient(main.app).post("/demo/seed-claim", json=tok, headers={"X-Actor": "izzy"})
         assert s.status_code == 201
         claim_id = s.json()["claim_id"]

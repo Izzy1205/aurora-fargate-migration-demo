@@ -49,7 +49,7 @@ class AuditEntry:
     action: str
     record_type: str
     record_id: int
-    reason: str
+    reason: str | None
     after_data: dict[str, Any]
 
 
@@ -65,9 +65,15 @@ class TicketRejected(LookupError):
 class VaultStore(Protocol):
     def find_by_hmac(self, ssn_hmac: bytes) -> VaultRow | None: ...
 
-    def insert(self, row: VaultRow) -> VaultRow:
-        """Insert, or return the existing row if this hmac is already there
-        (two requests for the same SSN at once)."""
+    def find_audited(self, ssn_hmac: bytes, audit: Callable[[VaultRow], AuditEntry]) -> VaultRow | None:
+        """In one transaction: find the row for this hmac and, if there is
+        one, write the audit entry. None, and no audit row, if not found."""
+        ...
+
+    def insert(self, row: VaultRow, audit: Callable[[VaultRow, bool], AuditEntry]) -> tuple[VaultRow, bool]:
+        """In one transaction: insert, or find the existing row if this hmac
+        is already there (two requests for the same SSN at once), and write
+        the audit entry. Returns (row, created)."""
         ...
 
     def issue_ticket(
@@ -168,8 +174,17 @@ class PostgresVaultStore:
             r = conn.execute(f"SELECT {self._cols} FROM ssn_vault WHERE ssn_hmac = %s", (ssn_hmac,)).fetchone()  # nosec B608 - fixed column list
             return self._row(r)
 
-    def insert(self, row: VaultRow) -> VaultRow:
-        with self._connect() as conn:
+    def find_audited(self, ssn_hmac: bytes, audit: Callable[[VaultRow], AuditEntry]) -> VaultRow | None:
+        with self._connect() as conn, conn.transaction():
+            found = self._row(
+                conn.execute(f"SELECT {self._cols} FROM ssn_vault WHERE ssn_hmac = %s", (ssn_hmac,)).fetchone()  # nosec B608 - fixed column list
+            )
+            if found is not None:
+                _audit_sql(conn, audit(found))
+        return found
+
+    def insert(self, row: VaultRow, audit: Callable[[VaultRow, bool], AuditEntry]) -> tuple[VaultRow, bool]:
+        with self._connect() as conn, conn.transaction():
             r = conn.execute(
                 f"""
                 INSERT INTO ssn_vault (ssn_token, ssn_hmac, ssn_ciphertext, key_id)
@@ -179,13 +194,15 @@ class PostgresVaultStore:
                 """,  # nosec B608 - fixed column list
                 (row.ssn_token, row.ssn_hmac, row.ssn_ciphertext, row.key_id),
             ).fetchone()
+            created = r is not None
             if r is None:
                 r = conn.execute(
                     f"SELECT {self._cols} FROM ssn_vault WHERE ssn_hmac = %s", (row.ssn_hmac,)  # nosec B608
                 ).fetchone()
             found = self._row(r)
             assert found is not None  # nosec B101 - conflict means the row exists
-            return found
+            _audit_sql(conn, audit(found, created))
+        return found, created
 
     def issue_ticket(
         self,

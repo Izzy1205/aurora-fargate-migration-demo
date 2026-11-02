@@ -64,7 +64,7 @@ READ_TIMEOUT = 30.0
 
 SSN_PATHS = ("/ssn/tokenize", "/ssn/tickets", "/ssn/tickets/refresh", "/ssn/reveal")
 # The only request headers the vault gets. Everything the handlers read.
-FORWARD_HEADERS = ("content-type", "x-actor", "x-reauth-actor", "x-reauth-at")
+FORWARD_HEADERS = ("content-type", "x-actor", "x-caller", "x-reauth-actor", "x-reauth-at")
 # The only response headers passed back. retry-after rides on the vault 429.
 RETURN_HEADERS = ("content-type", "cache-control", "pragma", "retry-after")
 MAX_RESPONSE_BYTES = 64 * 1024

@@ -1,5 +1,7 @@
-"""Per-actor rate limit on the vault's ticket and reveal routes, and the
-metric lines behind the SSN audit alarms. Fake 9xx SSNs only."""
+"""Per-actor rate limit on the vault's tokenize, ticket and reveal routes,
+and the metric lines behind the SSN audit alarms. Fake 9xx SSNs only.
+The tokenize caller check and its limit over HTTP are in
+test_ssn_tokenize_caller.py."""
 
 import json
 import logging
@@ -14,15 +16,19 @@ from demo_app.ssn import ratelimit
 from demo_app.ssn.ratelimit import (
     DEFAULT_REVEAL_LIMIT,
     DEFAULT_TICKET_LIMIT,
+    DEFAULT_TOKENIZE_LIMIT,
     REVEAL_BUCKET,
     REVEAL_LIMIT_ENV,
     TICKET_LIMIT_ENV,
     TICKETS_BUCKET,
+    TOKENIZE_BUCKET,
+    TOKENIZE_LIMIT_ENV,
     SlidingWindowLimiter,
     limiter_from_env,
 )
 from demo_app.ssn_api import TICKET_GONE, TOO_MANY, get_rate_limiter
 from demo_app.ssn_vault_client import EVENT_LOGGER, RETURN_HEADERS
+from conftest import CALLER, CALLER_NAME  # noqa: E402
 
 FAKE_SSN = "900-55-0001"
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,8 +49,9 @@ def clock():
 
 @pytest.fixture
 def limits(clock):
-    """Swap in a small limiter on a fake clock: 3 reveals, 2 ticket calls."""
-    lim = SlidingWindowLimiter({REVEAL_BUCKET: 3, TICKETS_BUCKET: 2}, clock=clock)
+    """Swap in a small limiter on a fake clock: 3 reveals, 2 ticket calls,
+    2 tokenizes."""
+    lim = SlidingWindowLimiter({REVEAL_BUCKET: 3, TICKETS_BUCKET: 2, TOKENIZE_BUCKET: 2}, clock=clock)
     vault.app.dependency_overrides[get_rate_limiter] = lambda: lim
     yield lim
     vault.app.dependency_overrides.pop(get_rate_limiter, None)
@@ -140,28 +147,35 @@ def test_key_count_is_bounded(clock):
     assert not lim.check(REVEAL_BUCKET, "actor-99").allowed
 
 
+DEFAULTS = {
+    REVEAL_BUCKET: DEFAULT_REVEAL_LIMIT,
+    TICKETS_BUCKET: DEFAULT_TICKET_LIMIT,
+    TOKENIZE_BUCKET: DEFAULT_TOKENIZE_LIMIT,
+}
+
+
 def test_defaults_when_env_is_unset():
     lim = limiter_from_env({})
-    assert lim.limits == {REVEAL_BUCKET: DEFAULT_REVEAL_LIMIT, TICKETS_BUCKET: DEFAULT_TICKET_LIMIT}
-    assert (DEFAULT_REVEAL_LIMIT, DEFAULT_TICKET_LIMIT) == (5, 10)
+    assert lim.limits == DEFAULTS
+    assert (DEFAULT_REVEAL_LIMIT, DEFAULT_TICKET_LIMIT, DEFAULT_TOKENIZE_LIMIT) == (5, 10, 60)
     assert lim.window == 60
 
 
 def test_env_sets_the_limits():
-    lim = limiter_from_env({REVEAL_LIMIT_ENV: "2", TICKET_LIMIT_ENV: " 7 "})
-    assert lim.limits == {REVEAL_BUCKET: 2, TICKETS_BUCKET: 7}
+    lim = limiter_from_env({REVEAL_LIMIT_ENV: "2", TICKET_LIMIT_ENV: " 7 ", TOKENIZE_LIMIT_ENV: "30"})
+    assert lim.limits == {REVEAL_BUCKET: 2, TICKETS_BUCKET: 7, TOKENIZE_BUCKET: 30}
 
 
 @pytest.mark.parametrize("bad", ["0", "-1", "1001", "five", "2.5", "1e3"])
 def test_bad_env_falls_back_to_the_default(bad, caplog):
     caplog.set_level(logging.WARNING)
-    lim = limiter_from_env({REVEAL_LIMIT_ENV: bad, TICKET_LIMIT_ENV: bad})
-    assert lim.limits == {REVEAL_BUCKET: DEFAULT_REVEAL_LIMIT, TICKETS_BUCKET: DEFAULT_TICKET_LIMIT}
+    lim = limiter_from_env({REVEAL_LIMIT_ENV: bad, TICKET_LIMIT_ENV: bad, TOKENIZE_LIMIT_ENV: bad})
+    assert lim.limits == DEFAULTS
     # The variable name and the default, never the value that was set.
     heads = {r.getMessage().split(", using the default")[0] for r in caplog.records}
-    names = (REVEAL_LIMIT_ENV, TICKET_LIMIT_ENV)
+    names = (REVEAL_LIMIT_ENV, TICKET_LIMIT_ENV, TOKENIZE_LIMIT_ENV)
     assert heads <= {f"{n} is out of range" for n in names} | {f"{n} is not a whole number" for n in names}
-    assert len(caplog.records) == 2
+    assert len(caplog.records) == 3
 
 
 def test_vault_reads_the_env_once(monkeypatch):
@@ -220,7 +234,7 @@ def test_window_reset_over_http(client, limits, clock):
 
 
 def test_ticket_issue_and_refresh_share_a_bucket(client, svc, store, limits, reauth_clock):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+    token = svc.tokenize(FAKE_SSN, caller=CALLER_NAME).ssn_token
     store.add_claim(11, token)
     r = tickets(client, token, 11)
     assert r.status_code == 201
@@ -239,11 +253,6 @@ def test_missing_actor_or_reason_is_not_counted(client, limits):
         r = client.post("/ssn/reveal", json={"ticket": "rtk_x"}, headers={"X-Actor": "staff-1"})
         assert r.status_code == 400
     assert reveal(client, "rtk_" + "B" * 32).status_code == 404
-
-
-def test_tokenize_is_not_limited(client, limits):
-    for _ in range(10):
-        assert client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).status_code in (200, 201)
 
 
 def test_default_limits_fit_the_readme_demo(client, issue):
@@ -271,7 +280,7 @@ def _metrics(d):
 
 
 def test_audited_actions_emit_metrics(client, svc, store, events, reauth_clock):
-    token = svc.tokenize(FAKE_SSN).ssn_token
+    token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER).json()["ssn_token"]
     store.add_claim(21, token)
     t = tickets(client, token, 21).json()["ticket"]
     h = {"X-Actor": "staff-1", "X-Reauth-Actor": "staff-1", "X-Reauth-At": str(int(reauth_clock["now"]))}
@@ -279,11 +288,12 @@ def test_audited_actions_emit_metrics(client, svc, store, events, reauth_clock):
     assert reveal(client, t2).status_code == 200
     docs = events.docs("ssn_audited")
     assert [(d["route"], d["action"]) for d in docs] == [
+        ("/ssn/tokenize", "ssn.tokenize"),
         ("/ssn/tickets", "ssn.ticket_issue"),
         ("/ssn/tickets/refresh", "ssn.ticket_refresh"),
         ("/ssn/reveal", "ssn.reveal"),
     ]
-    assert [_metrics(d) for d in docs] == [{"ssn_ticket_issue"}, {"ssn_ticket_refresh"}, {"ssn_reveal"}]
+    assert [_metrics(d) for d in docs] == [{"ssn_tokenize"}, {"ssn_ticket_issue"}, {"ssn_ticket_refresh"}, {"ssn_reveal"}]
     assert all(d[next(iter(_metrics(d)))] == 1 for d in docs)
     # one metric line per audit row
     assert len(docs) == len(store.audit)
@@ -294,7 +304,7 @@ def test_rejections_emit_metrics(client, svc, store, issue, events):
     _, t = issue(FAKE_SSN)
     assert reveal(client, t.ticket).status_code == 200
     assert reveal(client, t.ticket).status_code == 404  # used
-    token = svc.tokenize("900-55-0002").ssn_token
+    token = svc.tokenize("900-55-0002", caller=CALLER_NAME).ssn_token
     assert tickets(client, token, 999).status_code == 404  # no such claim
     docs = events.docs("ssn_ticket_rejected")
     assert [(d["route"], d["reason"]) for d in docs] == [
@@ -344,8 +354,8 @@ def test_metric_lines_carry_no_actor_ticket_token_or_ssn(client, svc, store, iss
     for secret in ["staff-secret-77", t.ticket, token, "900550001", FAKE_SSN, "Q" * 32]:
         assert secret not in text
     allowed = {"_aws", "NamePrefix", "level", "event", "route", "status", "latency_ms", "reason", "action",
-               "bucket", "limit", "ssn_reveal", "ssn_ticket_issue", "ssn_ticket_refresh", "ssn_ticket_rejected",
-               "ssn_closed_claim_attempt", "ssn_rate_limited"}
+               "bucket", "limit", "ssn_tokenize", "ssn_reveal", "ssn_ticket_issue", "ssn_ticket_refresh",
+               "ssn_ticket_rejected", "ssn_closed_claim_attempt", "ssn_rate_limited", "ssn_caller_rejected"}
     for d in events.docs():
         assert set(d) <= allowed
 
@@ -380,6 +390,7 @@ def _alarms_tf():
         ("ssn-ticket-rejections-high", "ssn_ticket_rejected"),
         ("ssn-closed-claim-attempt", "ssn_closed_claim_attempt"),
         ("ssn-rate-limited", "ssn_rate_limited"),
+        ("ssn-tokenize-caller-rejected", "ssn_caller_rejected"),
     ],
 )
 def test_alarm_watches_a_metric_the_vault_writes(alarm, metric):

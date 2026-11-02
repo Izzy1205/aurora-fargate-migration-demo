@@ -305,8 +305,8 @@ locals {
     }
 
     # The SSN audit trail. The vault writes one metric line as it commits
-    # each audited action, refuses a ticket or answers 429 (see
-    # app/src/demo_app/ssn_events.py). All Sum over 5 minutes, across
+    # each audited action, refuses a ticket or a tokenize caller, or
+    # answers 429 (see app/src/demo_app/ssn_events.py). All Sum over 5 minutes, across
     # every vault task. No data means nothing happened, so notBreaching.
     ssn-reveals-high = {
       description = "More SSN reveals than usual in 5 minutes. Check audit_event for action ssn.reveal: who, which claims, and why."
@@ -350,12 +350,27 @@ locals {
       threshold   = 1
       missing     = "notBreaching"
     }
-    # The vault's per-actor limit answered 429. Normal use stays well under
+    # The vault's per-actor or per-caller limit answered 429. Normal use stays well under
     # it, so one is worth a look.
     ssn-rate-limited = {
-      description = "The SSN vault's per-actor rate limit answered 429 on /ssn/reveal or /ssn/tickets."
+      description = "The SSN vault's per-actor or per-caller rate limit answered 429 on /ssn/reveal, /ssn/tickets or /ssn/tokenize."
       namespace   = "MigDemo/SsnVault"
       metric      = "ssn_rate_limited"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = 1
+      missing     = "notBreaching"
+    }
+    # /ssn/tokenize refused a missing or unknown X-Caller (403). Only the
+    # sign-up and wage-loader services call it, so one is worth a look.
+    ssn-tokenize-caller-rejected = {
+      description = "The SSN vault refused a /ssn/tokenize call with no X-Caller or one not on the allowlist. Check the reason field on ssn_caller_rejected lines in /ecs/<name_prefix>/ssn-vault."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_caller_rejected"
       statistic   = "Sum"
       dimensions  = local.vault_emf_dims
       period      = 300

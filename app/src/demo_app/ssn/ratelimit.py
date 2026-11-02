@@ -1,4 +1,5 @@
-"""Per-actor rate limit for the SSN vault's ticket and reveal routes.
+"""Per-actor rate limit for the SSN vault's tokenize, ticket and reveal
+routes.
 
 The WAF already limits /ssn/reveal and /ssn/tickets per client IP at the
 load balancer. It can't tell two staff behind one office IP apart, and it
@@ -6,11 +7,13 @@ can't stop one actor spread over many IPs. This limit keys on the actor
 instead, so the two layers cover each other.
 
 How it works:
-- A sliding window of 60 seconds per (bucket, actor). Two buckets:
-  "reveal" (/ssn/reveal) and "tickets" (/ssn/tickets and
-  /ssn/tickets/refresh).
-- Every request that gets past the actor and reason checks counts,
-  whether it then succeeds or gets a 404. A 429 does not count, so an
+- A sliding window of 60 seconds per (bucket, actor). Three buckets:
+  "reveal" (/ssn/reveal), "tickets" (/ssn/tickets and
+  /ssn/tickets/refresh) and "tokenize" (/ssn/tokenize). For tokenize the
+  actor is the caller service from X-Caller (see callers.py).
+- Every request that gets past the actor and reason checks (for
+  tokenize, the caller check) counts, whether it then succeeds or gets a
+  400 or 404. A 429 does not count, so an
   actor who backs off gets back in when the window moves on.
 - State is in memory, in each vault task. With N vault tasks an actor can
   get up to N times the limit, and a task restart clears it. The vault is
@@ -19,8 +22,8 @@ How it works:
 - The actor is only ever a dictionary key here. It is never logged.
 
 Limits come from env vars, read once when the vault first needs them:
-SSN_REVEAL_LIMIT_PER_MINUTE (default 5) and SSN_TICKET_LIMIT_PER_MINUTE
-(default 10). A missing or bad value falls back to the default, so no
+SSN_REVEAL_LIMIT_PER_MINUTE (default 5), SSN_TICKET_LIMIT_PER_MINUTE
+(default 10) and SSN_TOKENIZE_LIMIT_PER_MINUTE (default 60). A missing or bad value falls back to the default, so no
 task definition change is needed to ship this, and a typo can't turn the
 limit off. Setting the env var does mean a task definition change, which
 the deploy pipeline treats as a replace.
@@ -42,11 +45,16 @@ log = logging.getLogger("demo_app.ssn")
 WINDOW_SECONDS = 60.0
 REVEAL_BUCKET = "reveal"
 TICKETS_BUCKET = "tickets"
+TOKENIZE_BUCKET = "tokenize"
 
 REVEAL_LIMIT_ENV = "SSN_REVEAL_LIMIT_PER_MINUTE"
 TICKET_LIMIT_ENV = "SSN_TICKET_LIMIT_PER_MINUTE"
+TOKENIZE_LIMIT_ENV = "SSN_TOKENIZE_LIMIT_PER_MINUTE"
 DEFAULT_REVEAL_LIMIT = 5
 DEFAULT_TICKET_LIMIT = 10
+# Per caller service, not per person. Sign-up tokenizes one SSN per new
+# claimant. A bulk wage load would need a higher limit or a batch path.
+DEFAULT_TOKENIZE_LIMIT = 60
 MIN_LIMIT = 1
 MAX_LIMIT = 1000
 
@@ -134,5 +142,6 @@ def limiter_from_env(env: Mapping[str, str] | None = None) -> SlidingWindowLimit
         {
             REVEAL_BUCKET: read_limit(env, REVEAL_LIMIT_ENV, DEFAULT_REVEAL_LIMIT),
             TICKETS_BUCKET: read_limit(env, TICKET_LIMIT_ENV, DEFAULT_TICKET_LIMIT),
+            TOKENIZE_BUCKET: read_limit(env, TOKENIZE_LIMIT_ENV, DEFAULT_TOKENIZE_LIMIT),
         }
     )

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from demo_app import ssn_api, vault
 from demo_app.ssn import FakeEncryptor, KmsEncryptor, SsnTokenService
-from conftest import FakeVaultStore  # noqa: E402
+from conftest import CALLER, FakeVaultStore  # noqa: E402
 from demo_app.ssn.config import (
     CachedOnSuccess,
     SsnConfigError,
@@ -252,7 +252,7 @@ def test_wired_tokenize_and_reveal(wired):
     client, aws, store, seen = wired
     aws.key_ok()
     aws.pepper()
-    r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+    r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     assert r.status_code == 201
     token = r.json()["ssn_token"]
     assert seen["settings"].user == "ssn_vault_login" and seen["settings"].password == ""
@@ -264,10 +264,10 @@ def test_wired_tokenize_and_reveal(wired):
     ticket = r.json()["ticket"]
     r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "case 1"}, headers={"X-Actor": "staff-1"})
     assert r.status_code == 200 and r.json()["ssn"] == "900000001"
-    assert [a.action for a in store.audit] == ["ssn.ticket_issue", "ssn.reveal"]
-    assert store.audit[1].after_data == {"ssn_token": token, "ticket_id": 1, "claim_id": 1}
+    assert [a.action for a in store.audit] == ["ssn.tokenize", "ssn.ticket_issue", "ssn.reveal"]
+    assert store.audit[2].after_data == {"ssn_token": token, "ticket_id": 1, "claim_id": 1}
     # Config was read once and cached: no more stubbed responses were used.
-    assert client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).status_code == 200
+    assert client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER).status_code == 200
 
 
 def test_wired_missing_pepper_is_503_with_safe_log(wired, caplog):
@@ -275,7 +275,7 @@ def test_wired_missing_pepper_is_503_with_safe_log(wired, caplog):
     aws.key_ok()
     aws.sm_stub.add_client_error("get_secret_value", "ResourceNotFoundException", "no value")
     with caplog.at_level(logging.WARNING, logger="demo_app"):
-        r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+        r = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     assert r.status_code == 503 and r.json() == {"detail": "ssn service unavailable"}
     assert "pepper secret missing or has no value yet" in caplog.text
     assert "900" not in caplog.text and "arn:" not in caplog.text
@@ -301,15 +301,15 @@ def test_kms_failure_on_reveal_is_503_and_rolls_back(monkeypatch):
     vault.app.dependency_overrides[ssn_api.get_ssn_service] = lambda: svc
     try:
         client = TestClient(vault.app)
-        token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}).json()["ssn_token"]
+        token = client.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER).json()["ssn_token"]
         store.add_claim(1, token)
         ticket = svc.issue_ticket(token, 1, actor="a", reason="x").ticket
         r = client.post("/ssn/reveal", json={"ticket": ticket, "reason": "x"}, headers={"X-Actor": "a"})
     finally:
         vault.app.dependency_overrides.clear()
     assert r.status_code == 503 and "900" not in r.text
-    # Only the issue line landed; the ticket is still unused.
-    assert [a.action for a in store.audit] == ["ssn.ticket_issue"]
+    # Only the tokenize and issue lines landed; the ticket is still unused.
+    assert [a.action for a in store.audit] == ["ssn.tokenize", "ssn.ticket_issue"]
     assert store.ticket(ticket)["used_at"] is None
 
 
@@ -321,7 +321,7 @@ def test_kms_failure_on_tokenize_is_503(monkeypatch):
     svc = SsnTokenService(MemoryStore(), KmsEncryptor(KEY_ARN, client=kms), bytes(range(32)))
     vault.app.dependency_overrides[ssn_api.get_ssn_service] = lambda: svc
     try:
-        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     finally:
         vault.app.dependency_overrides.clear()
     assert r.status_code == 503 and "900" not in r.text

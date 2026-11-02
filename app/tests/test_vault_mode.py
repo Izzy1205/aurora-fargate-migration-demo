@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from demo_app import main, ssn_api, vault
 from demo_app.ssn import HeaderReauthVerifier
 from demo_app.ssn_api import get_reauth_verifier, get_ssn_service
+from conftest import CALLER  # noqa: E402
 
 FAKE_SSN = "900-00-0001"
 SSN_PATHS = {"/ssn/tokenize", "/ssn/tickets", "/ssn/reveal", "/ssn/tickets/refresh"}
@@ -62,7 +63,7 @@ def test_health_needs_nothing():
 
 
 def test_tokenize_then_reveal(vclient, store):
-    r = vclient.post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+    r = vclient.post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
     assert r.status_code == 201 and r.headers["cache-control"] == "no-store"
     token = r.json()["ssn_token"]
     store.add_claim(501, token)
@@ -75,7 +76,7 @@ def test_tokenize_then_reveal(vclient, store):
 
 
 def test_bad_request_does_not_echo_ssn(vclient):
-    r = vclient.post("/ssn/tokenize", json={"ssn": ["900-00-0001"]})
+    r = vclient.post("/ssn/tokenize", json={"ssn": ["900-00-0001"]}, headers=CALLER)
     assert r.status_code == 422 and r.json() == {"detail": "invalid request"}
     assert "900" not in r.text
 
@@ -87,7 +88,7 @@ def test_unconfigured_service_is_503(monkeypatch):
     vault.app.dependency_overrides.clear()
     ssn_api._ssn_service.reset()
     try:
-        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN})
+        r = TestClient(vault.app).post("/ssn/tokenize", json={"ssn": FAKE_SSN}, headers=CALLER)
         assert r.status_code == 503 and r.json() == {"detail": "ssn service unavailable"}
     finally:
         ssn_api._ssn_service.reset()

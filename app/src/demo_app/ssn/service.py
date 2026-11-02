@@ -4,7 +4,8 @@ The permanent ssn_token on claimant can't reveal anything by itself. To
 see an SSN, staff get a reveal ticket for one open claim. The ticket
 works once, lives while the claim is open and never more than 72 hours,
 and can be swapped for a fresh one only after the actor signs in again.
-Issue, reveal and refresh each write their own audit_event row.
+Issue, reveal and refresh each write their own audit_event row. So does
+tokenize, with the caller service as the actor.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ TICKET_RE = re.compile(r"^rtk_[A-Za-z0-9_-]{32}$")
 REVEAL_ACTION = "ssn.reveal"
 ISSUE_ACTION = "ssn.ticket_issue"
 REFRESH_ACTION = "ssn.ticket_refresh"
+TOKENIZE_ACTION = "ssn.tokenize"
 # The hard cap. V11's CHECK refuses anything longer, whatever this says.
 TICKET_TTL_HOURS = 72
 MIN_PEPPER_BYTES = 32
@@ -119,20 +121,41 @@ class SsnTokenService:
         self._enc = encryptor
         self._pepper = pepper
 
-    def tokenize(self, raw_ssn: str) -> TokenizeResult:
+    def tokenize(self, raw_ssn: str, caller: str) -> TokenizeResult:
+        """Every success writes one audit_event row in the same transaction
+        as the lookup or the insert: actor is the caller service, record_id
+        the vault row id, after_data says whether the row is new. The row
+        never holds the SSN, the HMAC or the token. If the audit write fails
+        nothing is returned, and a new vault row is rolled back with it."""
+        caller = (caller or "").strip()
+        if not caller:
+            raise RevealNotAllowed("caller is required")
         digits = normalize_ssn(raw_ssn)
         digest = hmac_ssn(self._pepper, digits)
-        existing = self._store.find_by_hmac(digest)
+
+        def audit(row: VaultRow, created: bool) -> AuditEntry:
+            return AuditEntry(
+                actor=caller,
+                action=TOKENIZE_ACTION,
+                record_type="ssn_vault",
+                record_id=row.id,
+                reason=None,
+                after_data={"created": created},
+            )
+
+        existing = self._store.find_audited(digest, lambda row: audit(row, False))
         if existing is not None:
+            log.info("ssn tokenized created=False")
             return TokenizeResult(existing.ssn_token, existing.ssn_hmac, created=False)
 
         token = new_token()
         blob = self._enc.encrypt(digits.encode("ascii"), _context(token))
-        row = self._store.insert(
-            VaultRow(id=0, ssn_token=token, ssn_hmac=digest, ssn_ciphertext=blob, key_id=self._enc.key_id)
+        row, created = self._store.insert(
+            VaultRow(id=0, ssn_token=token, ssn_hmac=digest, ssn_ciphertext=blob, key_id=self._enc.key_id),
+            audit,
         )
-        created = row.ssn_token == token
-        # No token or SSN in logs; the vault row and audit_event are the record.
+        # No token, HMAC, SSN or caller in logs; the vault row and
+        # audit_event are the record.
         log.info("ssn tokenized created=%s", created)
         return TokenizeResult(row.ssn_token, row.ssn_hmac, created=created)
 
