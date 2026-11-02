@@ -1,4 +1,6 @@
-# Copy to terraform.tfvars (gitignored) and fill in.
+# Testing CI roles. Copy to terraform.tfvars (gitignored) and fill in.
+# Stage and production have their own stage.tfvars.example and
+# production.tfvars.example, each applied with its own state key (backend.tf).
 aws_region                  = "us-east-2"
 owner                       = "izzy"
 github_repo                 = "REPLACE-ME-github-user/aurora-fargate-migration-demo"

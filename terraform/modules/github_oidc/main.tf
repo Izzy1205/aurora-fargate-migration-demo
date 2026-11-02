@@ -53,7 +53,21 @@ locals {
   ssn_key_alias   = "alias/${local.p}-ssn"
 
   # Saved plans from deploy.yml, next to the state in the same bucket.
-  plans_prefix = "arn:${local.part}:s3:::${var.state_bucket_name}/${var.plans_prefix}/*"
+  # tg-plan.yml writes plans/<run>-<attempt>/<env>/<unit>/tfplan, so the
+  # plan role can only write plans for its own environment.
+  plans_prefix = "arn:${local.part}:s3:::${var.state_bucket_name}/${var.plans_prefix}/*/${var.environment}/*"
+
+  # Promotion source (stage pulls from testing, production from stage).
+  # Read only: the deploy role copies the scanned image by digest from the
+  # source env's repos into its own, and checks the source service runs it.
+  promote_from = var.promote_from_prefix
+  promote_source_repo_arns = local.promote_from == "" ? [] : [
+    for r in ["app", "migrate"] : "arn:${local.part}:ecr:${local.region}:${local.account}:repository/${local.promote_from}/${r}"
+  ]
+  promote_source_service_arns = local.promote_from == "" ? [] : [
+    for s in ["app", "ssn-vault"] :
+    "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.promote_from}-cluster/${local.promote_from}-${s}"
+  ]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -74,6 +88,9 @@ data "aws_iam_openid_connect_provider" "github" {
 #   jobs with environment: X    -> repo:OWNER/NAME:environment:X
 # The plan role is also trusted from the plan environment, so the deploy
 # workflow can make its saved plan without waiting on a reviewer.
+# Only testing trusts pull_request (var.trust_pull_request). That subject
+# carries no environment, so any branch's PR could use a role that trusts it.
+# Stage and production plan roles trust their plan environment only.
 #
 # GitHub can send the repo part of "sub" in two forms: the classic
 # repo:OWNER/NAME, or the immutable repo:OWNER@ID/NAME@ID form newer repos
@@ -84,7 +101,7 @@ locals {
 
 data "aws_iam_policy_document" "trust" {
   for_each = {
-    plan   = ["pull_request", "environment:${var.plan_environment}"]
+    plan   = concat(var.trust_pull_request ? ["pull_request"] : [], ["environment:${var.plan_environment}"])
     apply  = ["environment:${var.infra_environment}"]
     deploy = ["environment:${var.app_environment}"]
   }
@@ -105,6 +122,28 @@ data "aws_iam_policy_document" "trust" {
       variable = "${local.oidc_host}:sub"
       values   = flatten([for p in local.subject_prefixes : [for s in each.value : "${p}:${s}"]])
     }
+  }
+}
+
+# Shared guardrail: all three environments share one account and one state
+# bucket, and ReadOnlyAccess and PowerUserAccess both reach every S3 key. So
+# no CI role can read or write another environment's state, or any
+# bootstrap state. Each env's roles keep full use of their own prefix.
+locals {
+  state_key_root = trimsuffix(var.state_key_prefix, "/${var.environment}")
+  peer_envs      = setsubtract(["testing", "stage", "production"], [var.environment])
+  other_state = concat(
+    [for e in sort(tolist(local.peer_envs)) : "arn:${local.part}:s3:::${var.state_bucket_name}/${local.state_key_root}/${e}/*"],
+    ["arn:${local.part}:s3:::${var.state_bucket_name}/${local.state_key_root}/bootstrap*"],
+  )
+}
+
+data "aws_iam_policy_document" "deny_other_state" {
+  statement {
+    sid       = "NoOtherEnvState"
+    effect    = "Deny"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = local.other_state
   }
 }
 
