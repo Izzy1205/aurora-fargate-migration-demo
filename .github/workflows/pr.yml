@@ -216,11 +216,11 @@ jobs:
           run_flyway validate
           run_flyway info
 
-      - name: check expand-only result
+      - name: check the priority backfill result
         run: |
           psql -h localhost -U postgres -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
-          DECLARE total bigint; nulls bigint;
+          DECLARE total bigint; nulls bigint; dflt text;
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                            WHERE table_name = 'orders' AND column_name = 'priority') THEN
@@ -229,10 +229,16 @@ jobs:
             END IF;
             SELECT count(*), count(*) FILTER (WHERE priority IS NULL)
               INTO total, nulls FROM orders;
-            IF total = 0 OR nulls <> total THEN
-              RAISE EXCEPTION 'expected every seeded row to keep priority NULL, got % of %', nulls, total;
+            SELECT column_default INTO dflt FROM information_schema.columns
+              WHERE table_name = 'orders' AND column_name = 'priority';
+            -- V13 backfills every row and sets the default.
+            IF total = 0 OR nulls <> 0 THEN
+              RAISE EXCEPTION 'expected V13 to backfill every row, % of % still NULL', nulls, total;
             END IF;
-            RAISE NOTICE 'ok: % existing rows untouched by the expand step', total;
+            IF dflt IS DISTINCT FROM '''standard''::text' THEN
+              RAISE EXCEPTION 'expected priority default standard, got %', dflt;
+            END IF;
+            RAISE NOTICE 'ok: % rows backfilled, default is standard', total;
           END $$;
           SQL
 
