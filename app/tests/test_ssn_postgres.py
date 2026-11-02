@@ -28,6 +28,35 @@ def _versioned():
     return sorted(files, key=lambda p: int(p.name[1:].split("__")[0]))
 
 
+def _non_transactional(path):
+    # Flyway reads executeInTransaction from a <script>.conf next to it.
+    conf = path.with_name(path.name + ".conf")
+    return conf.exists() and "executeInTransaction=false" in conf.read_text().replace(" ", "")
+
+
+def _statements(text):
+    # One statement per execute, like Flyway outside a transaction, so a DO
+    # block can COMMIT. Splits on ; outside $$ bodies only, which is enough
+    # for our migrations.
+    out, cur = [], ""
+    for i, part in enumerate(text.split("$$")):
+        if i % 2:
+            cur += "$$" + part + "$$"
+            continue
+        pieces = part.split(";")
+        for piece in pieces[:-1]:
+            out.append(cur + piece)
+            cur = ""
+        cur += pieces[-1]
+    out.append(cur)
+    stmts = []
+    for st in out:
+        code = "\n".join(line for line in st.splitlines() if not line.strip().startswith("--"))
+        if code.strip():
+            stmts.append(st)
+    return stmts
+
+
 @pytest.fixture(scope="module")
 def db():
     name = "ssn_" + uuid.uuid4().hex[:8]
@@ -51,7 +80,11 @@ def db():
         c.execute("ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user")
     with psycopg.connect(**{**base, "dbname": name, "user": "migrator"}, autocommit=True) as c:
         for f in _versioned():
-            c.execute(f.read_text())
+            if _non_transactional(f):
+                for stmt in _statements(f.read_text()):
+                    c.execute(stmt)
+            else:
+                c.execute(f.read_text())
         c.execute((MIGRATIONS / "afterMigrate.sql").read_text())
     with psycopg.connect(**{**base, "dbname": name}, autocommit=True) as c:
         # db-logins re-runs its broad grant on every deploy, then the revoke.
