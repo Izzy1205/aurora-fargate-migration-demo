@@ -1,4 +1,5 @@
-# Not deployed. Inputs only, same as stage.
+# Deployed only by promote.yml (manual dispatch or a v* release tag), from an
+# image already running in stage. Wired up but not deployed yet.
 
 locals {
   environment     = "production"
@@ -6,7 +7,8 @@ locals {
   dr_region       = "us-west-2" # backup copies
   dr_copy_enabled = false       # org SCP blocks us-west-2
 
-  state_bucket = "REPLACE-ME-production-tfstate-bucket"
+  # Same bucket as testing, keys split by env (root.hcl). Set TF_STATE_BUCKET.
+  state_bucket = get_env("TF_STATE_BUCKET", "REPLACE-ME-tfstate-bucket")
 
   vpc_cidr = "10.42.0.0/16"
   multi_az = true

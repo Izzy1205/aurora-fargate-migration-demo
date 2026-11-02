@@ -11,9 +11,14 @@ variable "project" {
 }
 
 variable "environment" {
-  description = "Must match environment in terraform/environments/<env>/env.hcl. Only testing is deployed."
+  description = "Must match environment in terraform/environments/<env>/env.hcl. Bootstrap is applied once per environment, each with its own state key (see backend.tf)."
   type        = string
   default     = "testing"
+
+  validation {
+    condition     = contains(["testing", "stage", "production"], var.environment)
+    error_message = "Use testing, stage or production."
+  }
 }
 
 variable "owner" {

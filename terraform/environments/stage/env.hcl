@@ -1,4 +1,4 @@
-# Not deployed. Inputs only, so the layout shows what a second env looks like.
+# Deployed only by promote.yml, from an image already running in testing.
 
 locals {
   environment     = "stage"
@@ -6,7 +6,8 @@ locals {
   dr_region       = "us-west-2" # backup copies
   dr_copy_enabled = false       # org SCP blocks us-west-2
 
-  state_bucket = "REPLACE-ME-stage-tfstate-bucket"
+  # Same bucket as testing, keys split by env (root.hcl). Set TF_STATE_BUCKET.
+  state_bucket = get_env("TF_STATE_BUCKET", "REPLACE-ME-tfstate-bucket")
 
   vpc_cidr = "10.41.0.0/16"
   multi_az = true

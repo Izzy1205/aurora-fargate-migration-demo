@@ -1,0 +1,128 @@
+name: roll-out
+description: >-
+  Set up DB logins, run Flyway, then roll the app and the SSN vault, all by
+  image digest. Shared by deploy.yml (testing) and promote.yml (stage and
+  production) so every environment rolls out the same way.
+
+# Expects AWS credentials for the env's deploy role and a checkout of the
+# commit being deployed (for scripts/). Images must be repo@sha256:<digest>;
+# register-task-def.sh refuses anything else. The tag is the commit SHA and
+# only goes on a Docker label, for people.
+inputs:
+  tag:
+    description: Commit SHA the images were built from.
+    required: true
+  app-image:
+    description: App image, <registry>/<repo>@sha256:<digest>.
+    required: true
+  migrate-image:
+    description: Migration image, <registry>/<repo>@sha256:<digest>.
+    required: true
+  cluster:
+    required: true
+  service:
+    required: true
+  app-family:
+    required: true
+  app-desired-count:
+    description: app_desired_count in env.hcl.
+    required: true
+  app-url:
+    required: true
+  migration-family:
+    required: true
+  db-logins-family:
+    required: true
+  subnets:
+    required: true
+  migration-sg:
+    required: true
+  migration-log-group:
+    required: true
+  vault-service:
+    required: true
+  vault-family:
+    required: true
+  vault-container:
+    required: true
+  vault-desired-count:
+    description: ssn_vault_desired_count in env.hcl.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Creates the app and Flyway logins, or resets their passwords to what
+    # is in their secrets, and hands the tables to the Flyway login. Safe
+    # to re-run. This is the only task that reads the master secret.
+    - name: set up DB logins in the private subnets
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CLUSTER: ${{ inputs.cluster }}
+        MIGRATE_IMAGE: ${{ inputs.migrate-image }}
+        DB_LOGINS_FAMILY: ${{ inputs.db-logins-family }}
+        SUBNETS: ${{ inputs.subnets }}
+        SECURITY_GROUP: ${{ inputs.migration-sg }}
+        LOG_GROUP: ${{ inputs.migration-log-group }}
+        CONTAINER: db-logins
+      run: |
+        TASK_DEFINITION=$(bash scripts/register-task-def.sh "$DB_LOGINS_FAMILY" db-logins "$MIGRATE_IMAGE" "$TAG")
+        export TASK_DEFINITION
+        bash scripts/run-migration.sh
+
+    # Schema first. Expand-only, so the old code is fine with it.
+    - name: run Flyway migration task in the private subnets
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CLUSTER: ${{ inputs.cluster }}
+        MIGRATE_IMAGE: ${{ inputs.migrate-image }}
+        MIGRATION_FAMILY: ${{ inputs.migration-family }}
+        SUBNETS: ${{ inputs.subnets }}
+        SECURITY_GROUP: ${{ inputs.migration-sg }}
+        LOG_GROUP: ${{ inputs.migration-log-group }}
+      run: |
+        TASK_DEFINITION=$(bash scripts/register-task-def.sh "$MIGRATION_FAMILY" migrate "$MIGRATE_IMAGE" "$TAG")
+        export TASK_DEFINITION
+        bash scripts/run-migration.sh
+
+    # Only reached if the migration exited 0.
+    - name: deploy app
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CLUSTER: ${{ inputs.cluster }}
+        SERVICE: ${{ inputs.service }}
+        APP_IMAGE: ${{ inputs.app-image }}
+        APP_FAMILY: ${{ inputs.app-family }}
+        APP_URL: ${{ inputs.app-url }}
+        APP_DESIRED_COUNT: ${{ inputs.app-desired-count }}
+      run: |
+        task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$APP_IMAGE" "$TAG")
+        aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+          --task-definition "$task_def" --desired-count "$APP_DESIRED_COUNT" >/dev/null
+        echo "Waiting for $SERVICE to be stable on $task_def ($APP_IMAGE) with $APP_DESIRED_COUNT tasks"
+        aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+        echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # Same image as the app, started in SSN vault mode. Private subnets, no
+    # load balancer. Rolled after the app so a vault problem never blocks
+    # the app deploy.
+    - name: deploy SSN vault
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CLUSTER: ${{ inputs.cluster }}
+        APP_IMAGE: ${{ inputs.app-image }}
+        VAULT_SERVICE: ${{ inputs.vault-service }}
+        VAULT_FAMILY: ${{ inputs.vault-family }}
+        VAULT_CONTAINER: ${{ inputs.vault-container }}
+        VAULT_DESIRED_COUNT: ${{ inputs.vault-desired-count }}
+      run: |
+        task_def=$(bash scripts/register-task-def.sh "$VAULT_FAMILY" "$VAULT_CONTAINER" "$APP_IMAGE" "$TAG")
+        aws ecs update-service --cluster "$CLUSTER" --service "$VAULT_SERVICE" \
+          --task-definition "$task_def" --desired-count "$VAULT_DESIRED_COUNT" >/dev/null
+        echo "Waiting for $VAULT_SERVICE to be stable on $task_def with $VAULT_DESIRED_COUNT tasks"
+        aws ecs wait services-stable --cluster "$CLUSTER" --services "$VAULT_SERVICE"
+        echo "SSN vault deployed: $VAULT_SERVICE ($VAULT_DESIRED_COUNT tasks, private only)" | tee -a "$GITHUB_STEP_SUMMARY"

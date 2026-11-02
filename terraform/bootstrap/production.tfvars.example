@@ -1,0 +1,18 @@
+# Production CI roles. Copy to production.tfvars (gitignored), fill in, and
+# apply with its own state key (see backend.tf). Applied by hand, never from CI.
+aws_region  = "us-east-2"
+owner       = "izzy"
+environment = "production"
+github_repo = "REPLACE-ME-github-user/aurora-fargate-migration-demo"
+
+state_bucket_name = "REPLACE-ME-tfstate-bucket" # same bucket as testing and stage
+
+# Testing's bootstrap already created the account's GitHub OIDC provider.
+create_github_oidc_provider = false
+
+github_plan_environment  = "production-infra-plan"
+github_infra_environment = "production-infra"
+github_app_environment   = "production-app"
+
+# Same value as testing's tfvars, if testing needed it.
+# github_subject_prefixes = ["repo:OWNER@OWNER_ID/NAME@REPO_ID"]

@@ -54,3 +54,30 @@ variable "plans_prefix" {
   type        = string
   default     = "plans"
 }
+
+variable "environment" {
+  description = "Environment name (testing, stage, production). Scopes the saved plans this env's plan role may write."
+  type        = string
+
+  validation {
+    condition     = contains(["testing", "stage", "production"], var.environment)
+    error_message = "Use testing, stage or production."
+  }
+}
+
+variable "trust_pull_request" {
+  description = "Let pull_request jobs assume the plan role. True for testing only; stage and production plan roles trust their plan environment only."
+  type        = bool
+  default     = false
+}
+
+variable "promote_from_prefix" {
+  description = "name_prefix of the environment this one promotes images from (migdemo-testing for stage, migdemo-stage for production). Empty for testing, which builds its own."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.promote_from_prefix == "" || can(regex("^[a-z0-9]+-(testing|stage)$", var.promote_from_prefix))
+    error_message = "Use an empty string or <project>-testing / <project>-stage."
+  }
+}

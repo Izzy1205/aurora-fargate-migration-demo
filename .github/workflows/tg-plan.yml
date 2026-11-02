@@ -1,6 +1,6 @@
 name: tg-plan
 
-# Called by deploy.yml once per unit. Plans one Terragrunt unit with the
+# Called by infra.yml once per unit. Plans one Terragrunt unit with the
 # read-only plan role against the real outputs of the units it depends on
 # (mocks are switched off), and keeps the binary plan in the state bucket.
 #
@@ -19,6 +19,10 @@ on:
         description: Unit folder inside that env (network, data, app or observability).
         type: string
         required: true
+      ref:
+        description: Commit to plan. Empty means the commit that started the run (deploy.yml). promote.yml passes the commit being promoted.
+        type: string
+        default: ""
     outputs:
       has_changes:
         description: "'true' when the plan has changes and was saved."
@@ -67,6 +71,14 @@ jobs:
       plan_sha256: ${{ steps.save.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: ./.github/actions/check-role
+        with:
+          role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          env: ${{ inputs.env }}
+          kind: plan
 
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
@@ -111,15 +123,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Second check on top of the reviewer. Testing applies wait for a
-      # reviewer in the testing-infra environment (tg-apply.yml), and the
-      # release job waits in testing-app. This plan job runs in
-      # <env>-infra-plan, which only has a main branch rule and no reviewer.
-      # Stage isn't deployed yet, and production isn't wired up here yet.
-      # Reviewer rules live in the GitHub environment settings, not in this
-      # repo. A reviewer can miss one destroy line in a long plan, so any
-      # delete or replace stops here. Real teardowns are done by hand with
-      # scripts/teardown.sh, not through this pipeline.
+      # Second check on top of the reviewer. Testing has no reviewers. Stage
+      # and production run through promote.yml, and every production-*
+      # environment requires a reviewer (set in GitHub, not in this repo).
+      # A reviewer can miss one destroy line in a long plan, so any delete or
+      # replace stops here, in every environment. Real teardowns are done by
+      # hand with scripts/teardown.sh, not through this pipeline.
       - name: block deletes and replaces
         if: steps.plan.outputs.has_changes == 'true'
         run: |

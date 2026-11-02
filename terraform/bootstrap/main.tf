@@ -26,6 +26,16 @@ module "github_oidc" {
   create_oidc_provider    = var.create_github_oidc_provider
   state_bucket_name       = var.state_bucket_name
   state_key_prefix        = "${var.state_key_prefix}/${var.environment}"
+
+  environment = var.environment
+  # PR plans run against testing only. See modules/github_oidc/main.tf.
+  trust_pull_request = var.environment == "testing"
+  # Stage takes images from testing, production from stage. Never skips one.
+  promote_from_prefix = {
+    testing    = ""
+    stage      = "${var.project}-testing"
+    production = "${var.project}-stage"
+  }[var.environment]
 }
 
 output "plan_role_arn" {

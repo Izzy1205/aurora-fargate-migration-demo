@@ -15,6 +15,7 @@ data "aws_iam_policy_document" "plan" {
   source_policy_documents = [
     data.aws_iam_policy_document.deny_db_secret.json,
     data.aws_iam_policy_document.deny_ssn_material.json,
+    data.aws_iam_policy_document.deny_other_state.json,
   ]
 
   statement {
@@ -67,6 +68,7 @@ data "aws_iam_policy_document" "apply" {
   source_policy_documents = [
     data.aws_iam_policy_document.deny_db_secret.json,
     data.aws_iam_policy_document.deny_ssn_material.json,
+    data.aws_iam_policy_document.deny_other_state.json,
   ]
 
   statement {
@@ -320,6 +322,29 @@ data "aws_iam_policy_document" "deploy" {
     sid       = "ReadMigrationLogs"
     actions   = ["logs:GetLogEvents", "logs:FilterLogEvents"]
     resources = [local.migration_log_group]
+  }
+
+  # Promotion only. Pull the source env's image by digest, never push to it.
+  dynamic "statement" {
+    for_each = local.promote_from == "" ? [] : [1]
+    content {
+      sid = "PromotionSourcePull"
+      actions = [
+        "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability", "ecr:DescribeImages",
+      ]
+      resources = local.promote_source_repo_arns
+    }
+  }
+
+  # Promotion only. Check the source env is running the digest being promoted.
+  dynamic "statement" {
+    for_each = local.promote_from == "" ? [] : [1]
+    content {
+      sid       = "PromotionSourceServiceRead"
+      actions   = ["ecs:DescribeServices"]
+      resources = local.promote_source_service_arns
+    }
   }
 }
 
