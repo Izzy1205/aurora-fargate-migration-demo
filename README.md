@@ -33,7 +33,7 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The token service that fills them in is described in section 8.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 28 CloudWatch alarms and a dashboard, including an
+- Watches it all with 29 CloudWatch alarms and a dashboard, including an
   availability SLO with burn rate alerts and a p95 latency alarm. It also
   emails if a backup job fails.
 
@@ -127,18 +127,29 @@ The pieces:
   rows, and can only change `used_at`, `revoked_at` and `replaced_by`. No
   foreign keys, same as `ssn_vault`, so the claim retention purge isn't
   blocked by a login that can't delete tickets.
-- Audit trail: three actions, one row each, always who and why, never the
-  SSN or a ticket value. `ssn.ticket_issue` and `ssn.ticket_refresh`
-  (`record_type` `ssn_ticket`) and `ssn.reveal` (`record_type`
-  `ssn_vault`, with the ticket id and claim id). Each is written in the
-  same transaction as the change it records. No audit row, no change.
+- Audit trail: four actions, one row each, always who, never the SSN, the
+  HMAC, the token or a ticket value. `ssn.ticket_issue` and
+  `ssn.ticket_refresh` (`record_type` `ssn_ticket`) and `ssn.reveal`
+  (`record_type` `ssn_vault`, with the ticket id and claim id) also have
+  a reason. `ssn.tokenize` (`record_type` `ssn_vault`, the vault row id)
+  has the caller as the actor, no reason, and `{"created": true}` for a
+  new SSN or `false` for one the vault already had. Each is written in
+  the same transaction as the change or lookup it records. No audit row,
+  no change and no answer.
 
 Endpoints:
 - `POST /ssn/tokenize` takes `{"ssn": "..."}` and returns the token and
-  HMAC. 201 the first time, 200 after that. It takes no actor and writes
-  no audit row, so anyone who can reach it can ask whether an SSN is
-  already known (201 or 200) and nothing records who asked. Only the WAF
-  limit by IP slows that.
+  HMAC. 201 the first time, 200 after that. Because 201 versus 200 says
+  whether an SSN is already known, it needs an allowed caller in
+  `X-Caller` and writes an `ssn.tokenize` audit row for every 201 and
+  200. A missing or unknown caller gets 403 `caller not allowed`, the
+  same for both, with no audit row. 400 for a bad SSN.
+- Allowed callers are `claimant-signup` and `wage-loader`
+  (`ssn/callers.py`). `demo` is allowed too, but only in a `-testing`
+  environment, decided the same way as `/demo/seed-claim` below.
+  `SSN_TOKENIZE_CALLERS` (comma separated) replaces the list; bad names
+  and `demo` in it are dropped, and if nothing valid is left the default
+  is used. Not set today, for the same reason as the limits below.
 - `POST /ssn/tickets` takes `{"ssn_token": "...", "claim_id": 1,
   "reason": "..."}` and returns `{ticket, claim_id, expires_at}` with 201.
   401 with no actor, 400 with no reason, 404 when that token has no open
@@ -151,7 +162,12 @@ Endpoints:
   and returns a new ticket with 201. 401 with no actor, 400 with no
   reason, 401 `re-authentication required` without a fresh sign-in, 404
   for a ticket that can't be refreshed.
-- The actor comes from `X-Actor` for now.
+- The actor comes from `X-Actor` for now, and the tokenize caller from
+  `X-Caller`. Both are headers the client sets, so anyone who knows an
+  allowed caller name can send it. The caller check keeps casual callers
+  out and names the caller in the audit row, but it is not proof of who
+  called. That is the same gap as the verified identity in "Not done
+  yet".
 - Re-auth is a placeholder: `X-Reauth-Actor` must match the actor and
   `X-Reauth-At` (Unix seconds) must be under 5 minutes old. Anyone who can
   set `X-Actor` can set these too, so it only shows where the check goes.
@@ -169,17 +185,18 @@ Endpoints:
   tell two staff behind one office IP apart, and it can't stop one actor
   spread over many IPs. The vault only sees the app's IP, so it keys on
   `X-Actor` instead. Each actor gets 5 reveals and 10 ticket calls (issue
-  and refresh together) in any 60 seconds, then a 429
-  `{"detail": "too many requests"}` with `Retry-After` and `no-store`.
-  Every request with an actor and a reason counts, 404s included. A 429
-  doesn't count. Tokenize has no actor, so only the WAF limits it.
+  and refresh together) in any 60 seconds, and each tokenize caller gets
+  60 tokenize calls, then a 429 `{"detail": "too many requests"}` with
+  `Retry-After` and `no-store`. Every request with an actor and a reason,
+  or an allowed caller, counts, 404s and 400s included. A 403 or a 429
+  doesn't count.
 - The limit is kept in memory in each vault task. With 2 vault tasks an
   actor can get up to twice the limit, a little more during a deploy, and
   a task restart clears the count. `X-Actor` is a header for now, so a
   caller who changes it every request gets past this limit; the WAF limit
   by IP still applies. Both get fixed by the verified identity below.
-- `SSN_REVEAL_LIMIT_PER_MINUTE` and `SSN_TICKET_LIMIT_PER_MINUTE` change
-  the limits (1 to 1000). A bad value falls back to the default, so a
+- `SSN_REVEAL_LIMIT_PER_MINUTE`, `SSN_TICKET_LIMIT_PER_MINUTE` and
+  `SSN_TOKENIZE_LIMIT_PER_MINUTE` change the limits (1 to 1000). A bad value falls back to the default, so a
   typo can't turn the limit off. Neither is set today. Setting one is a
   task definition change, which the pipeline blocks as a replace (see
   "Why it's built this way"), so change the default in code instead.
@@ -233,8 +250,12 @@ all vault tasks:
   `ssn_closed_claim_attempt`, a reveal or refresh with a ticket whose
   claim has closed.
 - `<name_prefix>-ssn-rate-limited`: at least one `ssn_rate_limited`, a
-  429 from the vault's per-actor limit. The WAF's own 429s show up in the
-  WAF metrics instead.
+  429 from the vault's per-actor or per-caller limit. The WAF's own 429s
+  show up in the WAF metrics instead.
+- `<name_prefix>-ssn-tokenize-caller-rejected`: at least one
+  `ssn_caller_rejected`, a 403 on `/ssn/tokenize` for a missing or
+  unknown `X-Caller`. A service sending the wrong name, or someone
+  probing for known SSNs.
 
 First checks when one fires:
 1. `audit_event` has the who and why. For example, reveals in the last
@@ -244,6 +265,8 @@ First checks when one fires:
    lines have a `reason` (`unknown`, `malformed`, `expired`, `used`,
    `revoked`, `claim_closed`, `not_holder` or `no_open_claim`).
    `ssn_rate_limited` lines have the `bucket` and the `limit`.
+   `ssn_caller_rejected` lines have a `reason` (`no_caller` or
+   `unknown_caller`), never the name that was sent.
 3. Refusals and 429s have no audit row, and no log names the actor. The
    WAF logs redact `x-actor` and `x-reauth-actor`, so they give the client
    IP, the time and the path only. Match them to the vault log lines by
@@ -331,7 +354,9 @@ Turning it on in an environment:
    `aws secretsmanager put-secret-value --secret-id <name_prefix>/ssn/hmac-pepper --secret-string "$(openssl rand -hex 32)"`
 4. The next `/ssn` request picks it up within 30 seconds. Check it with a
    fake SSN in the 9xx range (never a real one):
-   `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -d '{"ssn":"900-12-3456"}'`
+   `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'`
+   `demo` only works in testing. In stage or production use an allowed
+   caller name instead.
 
 If it answers 503, the vault log (`/ecs/<name_prefix>/ssn-vault`) names
 the step that failed and nothing else, for example
@@ -376,7 +401,7 @@ In Git Bash, fake SSN only, all within 5 minutes for the refresh step
 ```bash
 ALB=http://<your-alb-dns-name>
 J="Content-Type: application/json"
-TOK=$(curl -s -X POST "$ALB/ssn/tokenize" -H "$J" -d '{"ssn":"900-12-3456"}'); echo "$TOK"
+TOK=$(curl -s -X POST "$ALB/ssn/tokenize" -H "$J" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'); echo "$TOK"
 SEED=$(curl -s -X POST "$ALB/demo/seed-claim" -H "$J" -H "X-Actor: izzy" -d "$TOK"); echo "$SEED"
 TOKEN=$(echo "$TOK" | sed -E 's/.*"ssn_token":"([^"]+)".*/\1/')
 CLAIM=$(echo "$SEED" | sed -E 's/.*"claim_id":([0-9]+).*/\1/')
@@ -404,6 +429,12 @@ Threat model, short version:
 - The HMAC is keyed, so the nine-digit space can't be brute forced
   without the pepper secret.
 - The vault login has no password to leak. Signing in needs the task role.
+- Tokenize answers 201 or 200, so it can tell whether an SSN is known.
+  Only allowed callers get an answer, each answer has an audit row
+  naming the caller, each caller is limited to 60 a minute, and every
+  refusal is a metric with an alarm. The caller is a header anyone can
+  set, though, so a caller who knows an allowed name still gets through,
+  limited and recorded under that name.
 - Every reveal is attributable and has a reason. The vault and app logs
   never carry the SSN, the token, a ticket or the actor, and mask anything
   shaped like an SSN. The WAF logs record request headers, with
@@ -419,7 +450,9 @@ pepper secret and IAM: `terraform/modules/ssn_vault`.
 
 Not done yet:
 - Actor from the verified identity (ALB OIDC or Cognito) and a "may
-  reveal" role check, instead of a header.
+  reveal" role check, instead of a header. The same for the tokenize
+  caller: prove the calling service (mutual TLS, a signed service token
+  or SigV4) instead of trusting `X-Caller`.
 - Two-person approval for bulk reveal.
 - A shared store for the per-actor limit (DynamoDB or ElastiCache), so it
   is exact across vault tasks and survives a restart.
@@ -431,11 +464,8 @@ Not done yet:
 - Store a hash of the ticket instead of the value, and maybe require the
   same actor at reveal as at issue.
 - A job that deletes tickets that are long dead.
-- Claimant sign-up and the wage loader calling tokenize.
-- Tokenize writes no audit row and has no caller check, so it is an
-  untraced oracle for whether an SSN is known. It needs a verified
-  caller (the sign-up and wage loader services) and its own audit or
-  metric line.
+- Claimant sign-up and the wage loader calling tokenize, sending
+  `X-Caller`.
 - The account keeps administration of the SSN key as a break glass. An
   account admin with `kms:PutKeyPolicy` can widen the key policy, so admin
   roles in this account are part of the trust boundary. The CI apply role
