@@ -11,7 +11,7 @@ from typing import Any, Mapping
 DEFAULT_PRIORITY = "standard"
 KNOWN_PRIORITIES = frozenset({"standard", "expedited", "overnight"})
 
-# Columns the app knows about. "priority" arrived in V3 and may not exist yet.
+# Columns the app knows about. "priority" arrived in V12 and may not exist yet.
 BASE_ORDER_COLUMNS = ("id", "customer_id", "status", "total_cents", "created_at")
 OPTIONAL_ORDER_COLUMNS = ("priority",)
 
@@ -20,7 +20,7 @@ def order_columns_to_select(existing_columns: set[str]) -> list[str]:
     """Columns to select from orders, given what the table has right now.
 
     Optional columns are only selected when present, so the same build runs
-    before and after the V3 migration.
+    before and after the V12 migration.
     """
     return list(BASE_ORDER_COLUMNS) + [c for c in OPTIONAL_ORDER_COLUMNS if c in existing_columns]
 
@@ -36,7 +36,7 @@ def present_order(row: Mapping[str, Any]) -> dict[str, Any]:
     """Shape one orders row for the API.
 
     `priority_set` tells the caller whether the value came from the database
-    or from the default, so the demo can show rows that predate V3.
+    or from the default, so the demo can show rows that predate V12.
     """
     raw_priority = row.get("priority")
     created = row.get("created_at")
