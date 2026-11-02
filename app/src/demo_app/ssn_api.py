@@ -72,7 +72,11 @@ def _build_ssn_service() -> SsnTokenService:
         user=cfg.db_user,
         password=local_password,
         sslmode=os.environ.get("DB_SSLMODE", "require"),
-        connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "20")),
+        # The first call after Aurora auto-pauses wakes it. A 20 s limit ran
+        # out in testing, so 23 s, still inside the app's 30 s read timeout
+        # (ssn_vault_client.py). A code default, not a task definition env
+        # var, because changing the env replaces the task definition.
+        connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "23")),
     )
     provider = None if local_password else iam_auth_password(
         boto3_client("rds", cfg.region), host, port, cfg.db_user, cfg.region

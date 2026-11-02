@@ -58,5 +58,20 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
     }
   }
 
+  # The SSN routes name the staff member in these headers. The vault logs
+  # never carry the actor, so the WAF logs shouldn't either. x-reauth-at is
+  # only a Unix time and stays visible.
+  redacted_fields {
+    single_header {
+      name = "x-actor"
+    }
+  }
+
+  redacted_fields {
+    single_header {
+      name = "x-reauth-actor"
+    }
+  }
+
   depends_on = [aws_cloudwatch_log_resource_policy.waf]
 }

@@ -37,3 +37,8 @@ output "task_role_name" {
   description = "Vault task role name."
   value       = aws_iam_role.task.name
 }
+
+output "task_role_arn" {
+  description = "Vault task role ARN. The SSN key policy names it."
+  value       = aws_iam_role.task.arn
+}

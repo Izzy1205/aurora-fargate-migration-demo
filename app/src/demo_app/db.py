@@ -27,7 +27,7 @@ class DbSettings:
     user: str
     password: str = field(repr=False)  # never printed
     sslmode: str = "require"
-    connect_timeout: int = 20
+    connect_timeout: int = 23
 
     @classmethod
     def from_env(cls) -> "DbSettings":
@@ -39,8 +39,9 @@ class DbSettings:
             user=os.environ["DB_USER"],
             password=os.environ["DB_PASSWORD"],
             sslmode=os.environ.get("DB_SSLMODE", "require"),
-            # Long enough for a paused Aurora cluster to resume.
-            connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "20")),
+            # Long enough for a paused Aurora cluster to resume. In testing
+            # a 20 s limit ran out while it woke, so 23 s.
+            connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "23")),
         )
 
 

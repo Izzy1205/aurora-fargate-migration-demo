@@ -19,3 +19,8 @@ variable "secret_recovery_window_days" {
   type        = number
   default     = 0
 }
+
+variable "vault_task_role_arn" {
+  description = "Vault task role ARN. The only principal the key policy lets encrypt and decrypt SSN data. Pass the role's arn attribute so the role exists before the key policy names it."
+  type        = string
+}

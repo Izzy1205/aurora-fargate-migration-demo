@@ -12,7 +12,10 @@ resource "aws_iam_role_policy_attachment" "plan_readonly" {
 }
 
 data "aws_iam_policy_document" "plan" {
-  source_policy_documents = [data.aws_iam_policy_document.deny_db_secret.json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.deny_db_secret.json,
+    data.aws_iam_policy_document.deny_ssn_material.json,
+  ]
 
   statement {
     sid       = "StateRead"
@@ -61,7 +64,10 @@ resource "aws_iam_role_policy_attachment" "apply_poweruser" {
 }
 
 data "aws_iam_policy_document" "apply" {
-  source_policy_documents = [data.aws_iam_policy_document.deny_db_secret.json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.deny_db_secret.json,
+    data.aws_iam_policy_document.deny_ssn_material.json,
+  ]
 
   statement {
     sid = "ManageProjectRolesWithBoundary"
@@ -250,7 +256,10 @@ resource "aws_iam_role" "deploy" {
 }
 
 data "aws_iam_policy_document" "deploy" {
-  source_policy_documents = [data.aws_iam_policy_document.deny_db_secret.json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.deny_db_secret.json,
+    data.aws_iam_policy_document.deny_ssn_material.json,
+  ]
 
   statement {
     sid       = "EcrAuth"
