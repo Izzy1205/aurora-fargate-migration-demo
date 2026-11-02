@@ -54,10 +54,13 @@ VAULT_DNS_SUFFIX = ".internal"
 VAULT_PORT = 8080
 
 # Fail fast on connect. The read allows for the vault's own first call to
-# wake Aurora: the DB connect timeout is 20 s (DB_CONNECT_TIMEOUT in main),
-# plus a little for KMS.
+# wake Aurora. The vault's DB connect timeout is 23 s (DB_CONNECT_TIMEOUT
+# in ssn_api.py). A fresh vault task first spends about 2 s on its startup
+# lookups (task metadata, KMS, the pepper), then KMS on the request itself.
+# 25 s left almost nothing for that, so 30 s. The ALB idle timeout is the
+# default 60 s, so the app still answers before the ALB gives up.
 CONNECT_TIMEOUT = 2.0
-READ_TIMEOUT = 25.0
+READ_TIMEOUT = 30.0
 
 SSN_PATHS = ("/ssn/tokenize", "/ssn/tickets", "/ssn/tickets/refresh", "/ssn/reveal")
 # The only request headers the vault gets. Everything the handlers read.

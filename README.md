@@ -135,7 +135,10 @@ The pieces:
 
 Endpoints:
 - `POST /ssn/tokenize` takes `{"ssn": "..."}` and returns the token and
-  HMAC. 201 the first time, 200 after that.
+  HMAC. 201 the first time, 200 after that. It takes no actor and writes
+  no audit row, so anyone who can reach it can ask whether an SSN is
+  already known (201 or 200) and nothing records who asked. Only the WAF
+  limit by IP slows that.
 - `POST /ssn/tickets` takes `{"ssn_token": "...", "claim_id": 1,
   "reason": "..."}` and returns `{ticket, claim_id, expires_at}` with 201.
   401 with no actor, 400 with no reason, 404 when that token has no open
@@ -241,8 +244,11 @@ First checks when one fires:
    lines have a `reason` (`unknown`, `malformed`, `expired`, `used`,
    `revoked`, `claim_closed`, `not_holder` or `no_open_claim`).
    `ssn_rate_limited` lines have the `bucket` and the `limit`.
-3. Refusals and 429s have no audit row, and the logs never name the
-   actor. Line their times up with the WAF logs to find the client IP.
+3. Refusals and 429s have no audit row, and no log names the actor. The
+   WAF logs redact `x-actor` and `x-reauth-actor`, so they give the client
+   IP, the time and the path only. Match them to the vault log lines by
+   time and route to find the IP. For anything that succeeded,
+   `audit_event` has the actor.
 
 How the vault finds its key, pepper and login:
 Nothing comes from the task definition. The first `/ssn` request works it
@@ -288,6 +294,20 @@ Grants:
   `/ecs/<name_prefix>/ssn-vault` log group, and nothing else. The app no
   longer calls KMS itself, so a separate bootstrap change takes the SSN
   statements out of the workload boundary.
+- Key policy (`terraform/modules/ssn_vault`): only the vault task role can
+  use the key on SSN data. It may Encrypt and Decrypt with `purpose=ssn`,
+  Decrypt the pepper through Secrets Manager, and DescribeKey. The account
+  keeps key administration (describe, policy, rotation, tags, aliases,
+  deletion) but no Encrypt, Decrypt or CreateGrant, so IAM alone can't
+  give anyone else the key. Two narrow account statements are left, both
+  through Secrets Manager only: GenerateDataKey on the pepper secret, so an
+  operator can set the pepper (but not read it back), and the throwaway
+  check Secrets Manager runs when a secret is created with this key.
+- IAM, on the CI roles (plan, apply and deploy, `terraform/modules/github_oidc`,
+  applied with bootstrap): explicit Deny on the SSN key, matched by its
+  alias, except that creation check, and on GetSecretValue and
+  PutSecretValue under `<name_prefix>/ssn/`. Terraform never reads the
+  pepper. It creates the secret, not its value.
 - Network: the VPC has no NAT, so KMS needs its own interface endpoint
   (`kms` in `interface_endpoints`). Secrets Manager already had one.
 
@@ -300,13 +320,14 @@ name, and using IAM auth for the login, means this change only adds IAM
 statements and SQL. The task definitions stay as they are.
 
 Turning it on in an environment:
-1. Apply `terraform/bootstrap` so the vault boundary has the SSN statements.
-   CI never applies bootstrap.
+1. Apply `terraform/bootstrap` so the vault boundary has the SSN statements
+   and the CI roles have the SSN denies. CI never applies bootstrap.
 2. Merge and let the deploy run. It adds the KMS endpoint, the IAM
    statements and the login.
 3. Set the pepper once, out of band, as 64 hex characters (32 random
    bytes). Never change it afterwards: a new pepper breaks every
-   `ssn_hmac` match.
+   `ssn_hmac` match. Run it with your own admin role, not a CI role. The
+   key policy lets you set it but not read it back.
    `aws secretsmanager put-secret-value --secret-id <name_prefix>/ssn/hmac-pepper --secret-string "$(openssl rand -hex 32)"`
 4. The next `/ssn` request picks it up within 30 seconds. Check it with a
    fake SSN in the 9xx range (never a real one):
@@ -318,6 +339,18 @@ the step that failed and nothing else, for example
 a 3 second connect or 5 second read, with one retry, so a missing route shows up as a quick 503 instead of a load balancer
 504. Bringing it up in testing hit both: a 504 from the missing KMS
 endpoint, then AccessDenied from the boundary. The two fixes are above.
+
+Aurora auto-pauses when idle, and the first connection wakes it. The
+vault's database connect timeout is 23 seconds (`DB_CONNECT_TIMEOUT`, a
+code default in `ssn_api.py` and `db.py`). It was 20, and in testing the
+first call after a pause ran out at 20 seconds with `database call failed:
+ConnectionTimeout` and a 503 after 22.6 seconds in all. The next call
+worked. The app waits 30 seconds for the vault (`READ_TIMEOUT` in
+`ssn_vault_client.py`), which covers the 23 second connect plus a fresh
+vault task's startup lookups. The ALB idle timeout is the default 60
+seconds. If a wake ever takes longer than 23 seconds, the first call still
+gets a 503 and the next one works. Change the default in code, not in the
+task definition.
 
 Try the ticket flow in testing:
 A ticket needs a claimant with an open claim, and nothing in the app
@@ -371,9 +404,13 @@ Threat model, short version:
 - The HMAC is keyed, so the nine-digit space can't be brute forced
   without the pepper secret.
 - The vault login has no password to leak. Signing in needs the task role.
-- Every reveal is attributable and has a reason. Logs never carry the
-  SSN, the token, a ticket or the actor, and mask anything shaped like an
-  SSN.
+- Every reveal is attributable and has a reason. The vault and app logs
+  never carry the SSN, the token, a ticket or the actor, and mask anything
+  shaped like an SSN. The WAF logs record request headers, with
+  `x-actor`, `x-reauth-actor`, `authorization` and `cookie` redacted.
+  WAF log lines written before that redaction still have the actor until
+  they age out.
+- CI can manage the SSN key but can't use it or read the pepper.
 - A leaked `tok_` value reveals nothing. A leaked ticket works once, for
   at most 72 hours, and only while its claim is open.
 
@@ -395,3 +432,16 @@ Not done yet:
   same actor at reveal as at issue.
 - A job that deletes tickets that are long dead.
 - Claimant sign-up and the wage loader calling tokenize.
+- Tokenize writes no audit row and has no caller check, so it is an
+  untraced oracle for whether an SSN is known. It needs a verified
+  caller (the sign-up and wage loader services) and its own audit or
+  metric line.
+- The account keeps administration of the SSN key as a break glass. An
+  account admin with `kms:PutKeyPolicy` can widen the key policy, so admin
+  roles in this account are part of the trust boundary. The CI apply role
+  can too, because Terraform manages the policy. Such a change shows in
+  the plan and the pull request, and CloudTrail records every
+  PutKeyPolicy.
+- The CI denies match the key by its alias, because bootstrap can't know
+  the key ARN. Removing the alias lifts those denies. The key policy still
+  gives CI no Encrypt or Decrypt, so both would have to change.

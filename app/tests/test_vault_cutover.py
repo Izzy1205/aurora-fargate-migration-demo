@@ -157,7 +157,7 @@ def test_vault_url_is_derived_from_the_name_prefix(monkeypatch):
     monkeypatch.setattr(ssn_vault_client, "_client", ssn_vault_client.CachedOnSuccess(ssn_vault_client._build_client))
     c = get_vault_client()
     assert c is not None and c.base_url == "http://ssn-vault.migdemo-testing.internal:8080"
-    assert (c.connect_timeout, c.read_timeout) == (2.0, 25.0)
+    assert (c.connect_timeout, c.read_timeout) == (2.0, 30.0)
 
 
 def test_no_name_prefix_means_no_vault_client(monkeypatch):
