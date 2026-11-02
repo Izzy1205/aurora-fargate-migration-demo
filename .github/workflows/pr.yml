@@ -216,11 +216,11 @@ jobs:
           run_flyway validate
           run_flyway info
 
-      - name: check the priority backfill result
+      - name: check the priority rollout result
         run: |
           psql -h localhost -U postgres -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
-          DECLARE total bigint; nulls bigint; dflt text;
+          DECLARE total bigint; nulls bigint; dflt text; nullable text; invalid text;
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                            WHERE table_name = 'orders' AND column_name = 'priority') THEN
@@ -229,8 +229,11 @@ jobs:
             END IF;
             SELECT count(*), count(*) FILTER (WHERE priority IS NULL)
               INTO total, nulls FROM orders;
-            SELECT column_default INTO dflt FROM information_schema.columns
+            SELECT column_default, is_nullable INTO dflt, nullable
+              FROM information_schema.columns
               WHERE table_name = 'orders' AND column_name = 'priority';
+            SELECT string_agg(conname, ', ') INTO invalid FROM pg_constraint
+              WHERE conrelid = 'orders'::regclass AND NOT convalidated;
             -- V13 backfills every row and sets the default.
             IF total = 0 OR nulls <> 0 THEN
               RAISE EXCEPTION 'expected V13 to backfill every row, % of % still NULL', nulls, total;
@@ -238,7 +241,22 @@ jobs:
             IF dflt IS DISTINCT FROM '''standard''::text' THEN
               RAISE EXCEPTION 'expected priority default standard, got %', dflt;
             END IF;
-            RAISE NOTICE 'ok: % rows backfilled, default is standard', total;
+            -- V14 validates the V12 check, sets NOT NULL and drops its helper check.
+            IF nullable <> 'NO' THEN
+              RAISE EXCEPTION 'expected orders.priority to be NOT NULL';
+            END IF;
+            IF invalid IS NOT NULL THEN
+              RAISE EXCEPTION 'expected every orders constraint validated, still NOT VALID: %', invalid;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'orders'::regclass
+                           AND conname = 'orders_priority_check' AND convalidated) THEN
+              RAISE EXCEPTION 'expected orders_priority_check to exist and be validated';
+            END IF;
+            IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'orders'::regclass
+                       AND conname = 'orders_priority_not_null') THEN
+              RAISE EXCEPTION 'expected V14 to drop its helper check orders_priority_not_null';
+            END IF;
+            RAISE NOTICE 'ok: % rows, NOT NULL, default standard, checks validated', total;
           END $$;
           SQL
 

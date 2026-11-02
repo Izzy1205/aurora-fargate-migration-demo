@@ -1,16 +1,17 @@
-# Contract steps (not applied yet)
+# Contract steps waiting to ship
 
-Flyway only reads `db/migrations/`. Files here show what the next release
-will look like. Move one at a time into `db/migrations/`, a release apart.
+Flyway only reads `db/migrations/`. This folder holds migrations that are
+written but must wait for an earlier release, such as a contract step that
+can only run after a backfill has finished in every environment. Move one
+at a time into `db/migrations/`, a release apart. It is empty when nothing
+is waiting.
 
-Rollout of `orders.priority`:
+Rollout of `orders.priority` (complete, all steps are in `db/migrations/`):
 
-1. V12 (shipped, PR #41): adds the nullable column and a NOT VALID check.
-2. V13 (shipped): sets the default to `standard` and backfills old rows in
-   committed batches. Now in `db/migrations/`.
-3. `V14__enforce_order_priority.sql` (next): validates the check and sets
-   NOT NULL. Its SET DEFAULT is now a no-op, since V13 already set it.
-
-Ship V14 only after V13 has been applied in testing and
-`SELECT count(*) FROM orders WHERE priority IS NULL` returns 0 there.
-V14 fails (and changes nothing) if any NULL is left.
+1. V12 (PR #41): adds the nullable column and a NOT VALID check.
+2. V13 (PR #45): sets the default to `standard` and backfills old rows in
+   committed batches.
+3. V14: validates the V12 check, then sets NOT NULL through a validated
+   `CHECK (priority IS NOT NULL)` so Postgres skips the full table scan
+   under an ACCESS EXCLUSIVE lock. It fails before changing anything if a
+   NULL is left.
