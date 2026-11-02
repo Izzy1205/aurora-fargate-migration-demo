@@ -4,11 +4,12 @@ name: deploy
 # Deploys one environment, one unit at a time:
 # network, data, app, then observability.
 # Each unit is planned, then the exact saved plan is applied.
-# A merge to main starts a testing deploy on its own, but each apply still
-# waits for a reviewer: the testing-infra environment for every unit and
-# testing-app for the release job. Reviewer rules live in the GitHub
-# environment settings. Production isn't wired up yet. When it is, it will
-# be started by hand and wait for reviewers too.
+# A merge to main deploys testing on its own. The testing-infra and
+# testing-app environments have no required reviewers, so testing applies
+# run without waiting; they only allow the main branch. Reviewer rules live
+# in the GitHub environment settings, not in this file. Production isn't
+# wired up yet. When it is, it will be started by hand and its
+# environments will require a reviewer before each apply.
 # Any plan that deletes or replaces a resource fails (see tg-plan.yml).
 # Teardowns are done by hand with scripts/teardown.sh.
 # The release job pushes the scanned images, sets up the DB logins, runs

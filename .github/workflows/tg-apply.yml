@@ -1,8 +1,9 @@
 name: tg-apply
 
-# Called by deploy.yml once per unit, after tg-plan. Waits for review in the
-# <env>-infra environment, then applies the exact saved plan with the
-# terraform role. A saved plan refuses to apply if the Terraform version,
+# Called by deploy.yml once per unit, after tg-plan. Runs in the
+# <env>-infra environment, which waits for a reviewer only if that
+# environment requires one (testing does not; production will). Then it
+# applies the exact saved plan with the terraform role. A saved plan refuses to apply if the Terraform version,
 # backend or providers differ from the plan job, or if the state changed
 # since the plan was made.
 on:
