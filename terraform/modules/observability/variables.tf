@@ -76,6 +76,8 @@ variable "thresholds" {
     queue_oldest_message_seconds = optional(number, 300)
     slo_availability_percent     = optional(number, 99.9) # good requests over 30 days, see slo.tf
     latency_p95_seconds          = optional(number, 1)    # p95 app response time
+    ssn_reveals_count            = optional(number, 30)   # SSN reveals in 5 minutes, all actors
+    ssn_ticket_rejections_count  = optional(number, 10)   # refused SSN tickets in 5 minutes
   })
   default = {}
 

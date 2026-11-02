@@ -331,10 +331,11 @@ def test_malformed_and_unknown_tickets(wired):
     client, aws, _store, _seen = wired
     aws.key_ok()
     aws.pepper()
-    h = {"X-Actor": "staff-1"}
     # Reveal takes a short-lived ticket, never the permanent tok_ value.
     # Malformed, unknown and permanent tokens all get the same 404.
-    for bad in ("", "rtk_short", "900-00-0001", "rtk_" + "!" * 32, "tok_" + "B" * 32, "rtk_" + "B" * 32):
+    # One actor each, so the per-actor reveal limit doesn't get in the way.
+    for i, bad in enumerate(("", "rtk_short", "900-00-0001", "rtk_" + "!" * 32, "tok_" + "B" * 32, "rtk_" + "B" * 32)):
+        h = {"X-Actor": f"staff-{i}"}
         r = client.post("/ssn/reveal", json={"ticket": bad, "reason": "x"}, headers=h)
         assert r.status_code == 404 and "900" not in r.text
         assert r.json() == {"detail": "ticket not found or no longer valid"}

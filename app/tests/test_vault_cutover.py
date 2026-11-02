@@ -386,7 +386,10 @@ def test_no_secrets_in_any_log_line(app_client, fake_vault, store, events, caplo
         assert secret not in text
     for d in events.docs():
         assert set(d) <= {"_aws", "NamePrefix", "level", "event", "route", "status", "latency_ms", "reason",
-                          "vault_status", "error", "ssn_vault_call", "ssn_vault_latency_ms", "ssn_vault_unavailable"}
+                          "vault_status", "error", "ssn_vault_call", "ssn_vault_latency_ms", "ssn_vault_unavailable",
+                          # the vault's own audit and rate limit lines (ssn_events.py)
+                          "action", "bucket", "limit", "ssn_reveal", "ssn_ticket_issue", "ssn_ticket_refresh",
+                          "ssn_ticket_rejected", "ssn_closed_claim_attempt", "ssn_rate_limited"}
 
 
 def test_log_lines_are_cloudwatch_embedded_metrics(app_client, fake_vault, events):

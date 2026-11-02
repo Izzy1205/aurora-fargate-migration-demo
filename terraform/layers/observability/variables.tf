@@ -83,7 +83,7 @@ variable "alarm_thresholds" {
       "elb_5xx_count", "target_5xx_count", "ecs_cpu_percent", "ecs_memory_percent",
       "aurora_cpu_percent", "aurora_acu_percent", "aurora_freeable_memory_bytes", "aurora_connections",
       "aurora_replica_lag_ms", "waf_blocked_requests", "queue_oldest_message_seconds",
-      "slo_availability_percent", "latency_p95_seconds",
+      "slo_availability_percent", "latency_p95_seconds", "ssn_reveals_count", "ssn_ticket_rejections_count",
     ], k)])
     error_message = "Unknown key in alarm_thresholds. See modules/observability/variables.tf for the list."
   }

@@ -16,8 +16,9 @@
 #   Aurora: AWS/RDS, DBClusterIdentifier (+ Role for reader-only metrics)
 #   WAF:    AWS/WAFV2, WebACL + Region + Rule (Rule = ALL for the whole ACL)
 #   SQS:    AWS/SQS, QueueName
-#   Vault:  MigDemo/SsnVault, NamePrefix (the app's own EMF log lines, see
-#           app/src/demo_app/ssn_vault_client.py)
+#   Vault:  MigDemo/SsnVault, NamePrefix (EMF log lines from the app, see
+#           app/src/demo_app/ssn_vault_client.py, and from the vault, see
+#           app/src/demo_app/ssn_events.py)
 
 locals {
   lb_dims = { LoadBalancer = var.alb_arn_suffix }
@@ -301,6 +302,68 @@ locals {
       comparison  = "LessThanThreshold"
       threshold   = 1
       missing     = "breaching"
+    }
+
+    # The SSN audit trail. The vault writes one metric line as it commits
+    # each audited action, refuses a ticket or answers 429 (see
+    # app/src/demo_app/ssn_events.py). All Sum over 5 minutes, across
+    # every vault task. No data means nothing happened, so notBreaching.
+    ssn-reveals-high = {
+      description = "More SSN reveals than usual in 5 minutes. Check audit_event for action ssn.reveal: who, which claims, and why."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_reveal"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = local.t.ssn_reveals_count
+      missing     = "notBreaching"
+    }
+    # 404s on reveal and refresh, and tickets asked for a claim that isn't
+    # open. Someone guessing or replaying tickets shows up here.
+    ssn-ticket-rejections-high = {
+      description = "Many SSN ticket refusals in 5 minutes. Check the reason field on ssn_ticket_rejected lines in /ecs/<name_prefix>/ssn-vault."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_ticket_rejected"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = local.t.ssn_ticket_rejections_count
+      missing     = "notBreaching"
+    }
+    # A ticket for a closed claim should never be used. One is worth a look.
+    ssn-closed-claim-attempt = {
+      description = "Someone tried to reveal or refresh with a ticket for a closed claim."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_closed_claim_attempt"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = 1
+      missing     = "notBreaching"
+    }
+    # The vault's per-actor limit answered 429. Normal use stays well under
+    # it, so one is worth a look.
+    ssn-rate-limited = {
+      description = "The SSN vault's per-actor rate limit answered 429 on /ssn/reveal or /ssn/tickets."
+      namespace   = "MigDemo/SsnVault"
+      metric      = "ssn_rate_limited"
+      statistic   = "Sum"
+      dimensions  = local.vault_emf_dims
+      period      = 300
+      evaluations = 1
+      datapoints  = 1
+      comparison  = "GreaterThanOrEqualToThreshold"
+      threshold   = 1
+      missing     = "notBreaching"
     }
   }
 }
