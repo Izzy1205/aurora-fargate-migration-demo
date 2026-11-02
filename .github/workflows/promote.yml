@@ -293,8 +293,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Same steps as deploy.yml: DB logins, Flyway, app, then the SSN vault.
-      # The first deploy of an env leaves the vault unhealthy until its SSN
-      # pepper is set by hand (README section 4).
+      # After an env's first deploy, /ssn answers 503 until its pepper is set
+      # by hand (README section 8).
       - uses: ./.github/actions/roll-out
         with:
           tag: ${{ needs.setup.outputs.sha }}

@@ -42,9 +42,18 @@ Everything is Terraform, organized with Terragrunt into four layers:
 network, data, app, and observability. Every pull request runs a plan
 plus security scans. Merging to main deploys to testing on its own. If
 a plan would delete or replace something, the pipeline stops and a
-person has to handle it. Stage and production are set up in code but
-not deployed yet. Production will always be a manual deploy with a
-reviewer.
+person has to handle it.
+
+Only testing builds images. Stage and production get the same image,
+by digest, through `promote.yml`: testing to stage, then stage to
+production. A commit can only move up if it's on main and is what the
+env below is running right now. The copy keeps the digest, so stage and
+production run the exact bytes that were scanned. The commit SHA tag
+goes along with it so people can see which commit is where. Stage is
+started by hand. Production is started by hand or by pushing a `vX.Y.Z`
+tag, never by a merge, and every production plan, apply and release
+waits for a reviewer. Each env has its own CI roles, and each role only
+trusts its own GitHub environment.
 
 4) What you need to run it
 - An AWS account and the AWS CLI signed in
@@ -56,11 +65,32 @@ reviewer.
 - Confirm the SNS alarm email after the first deploy
 - Budget about $3 a day while it's running
 
+For stage and production, on top of that:
+- Apply `terraform/bootstrap` once per env, each with its own state key
+  and tfvars (`stage.tfvars.example`, `production.tfvars.example`,
+  `backend.tf`). Both reuse the OIDC provider testing's bootstrap made.
+- GitHub environments `<env>-infra-plan`, `<env>-infra`, `<env>-app`.
+  Give each one the env variables `AWS_PLAN_ROLE_ARN`,
+  `AWS_TERRAFORM_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN` from that env's
+  bootstrap outputs. They override the repo-level testing values, and
+  the pipeline refuses a role that isn't for its env.
+- Stage environments: main branch only. Production environments: main
+  and `v*` tags, with a required reviewer on all three.
+- A tag ruleset so only you can create `v*` tags.
+- After the first deploy of each env: set its pepper (section 8) and
+  confirm its alarm email.
+- Stage costs about $8 to $9 a day while it's up (multi-AZ endpoints, an
+  Aurora floor that doesn't pause, ALB, WAF, four tasks). Bring it up to
+  prove a release, then tear it down. Every budget is account-wide, so
+  testing's budget alerts while stage runs.
+
 5) How it tears down
 Teardown is manual on purpose so the pipeline can never delete things
 on its own. Sign in to AWS first, since an expired session partway
-through leaves a mess. Then run `./scripts/teardown.sh testing`,
-check each plan, and type yes. It deletes the backups too. The bootstrap stays until you remove it yourself.
+through leaves a mess. Then run `./scripts/teardown.sh <env>`,
+check each plan, and type yes. Tearing down testing also deletes its
+images, so nothing can be promoted to stage until testing is deployed
+again. It deletes the backups too. The bootstrap stays until you remove it yourself.
 
 6) How I built this
 I designed it, ran it, and debugged it myself, and I used an AI
