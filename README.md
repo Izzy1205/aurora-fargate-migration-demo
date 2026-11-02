@@ -33,7 +33,7 @@ to patch, upgrade, and prove secure.
   claim and week. Payments and audit rows are add-only for the app login.
   The token service that fills them in is described in section 8.
 - Sends payment requests through an SQS queue with a dead letter queue
-- Watches it all with 22 CloudWatch alarms and a dashboard, including an
+- Watches it all with 24 CloudWatch alarms and a dashboard, including an
   availability SLO with burn rate alerts and a p95 latency alarm. It also
   emails if a backup job fails.
 
@@ -175,6 +175,27 @@ logs a WARN `ssn_vault_unavailable` line (also a CloudWatch metric in
 service, KMS, the pepper or the vault login, and its task role denies all
 three.
 
+Vault alarms (`terraform/modules/observability/alarms.tf`, sent to the
+same SNS topic as the rest):
+- `<name_prefix>-ssn-vault-unavailable`: at least one
+  `ssn_vault_unavailable` in 5 minutes (`MigDemo/SsnVault`, dimension
+  `NamePrefix`). The app answered 503 on `/ssn` because it couldn't use
+  the vault.
+- `<name_prefix>-ssn-vault-tasks-low`: the `<name_prefix>-ssn-vault`
+  service has had no live tasks for 3 minutes.
+
+First checks when either fires:
+1. Is the vault service running tasks? ECS console, or
+   `aws ecs describe-services --cluster <name_prefix>-cluster --services <name_prefix>-ssn-vault`.
+   Stopped tasks show why they stopped.
+2. The vault log, `/ecs/<name_prefix>/ssn-vault`. It names the step that
+   failed. The app's WARN line has a `reason` (`dns`, `connect_error`,
+   `connect_timeout`, `read_timeout`, `bad_response`, `vault_5xx` or
+   `no_vault_url`).
+3. The vault security group still allows 8080 from the app security group.
+4. Cloud Map: `ssn-vault.<name_prefix>.internal` has a healthy instance
+   for each running task.
+
 How the vault finds its key, pepper and login:
 Nothing comes from the task definition. The first `/ssn` request works it
 out with the vault task role and caches it (a failure is retried after 30
@@ -314,8 +335,6 @@ pepper secret and IAM: `terraform/modules/ssn_vault`.
 Not done yet:
 - Actor from the verified identity (ALB OIDC or Cognito) and a "may
   reveal" role check, instead of a header.
-- The token service runs inside the app task and uses its role. Its own
-  task and role would keep the key away from the rest of the app.
 - A per-actor reveal limit in the app, and two-person approval for bulk
   reveal. The WAF only limits by IP.
 - A key rotation re-encrypt job (rows record their key ARN).
