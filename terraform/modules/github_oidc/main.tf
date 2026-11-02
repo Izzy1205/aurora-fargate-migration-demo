@@ -40,6 +40,7 @@ locals {
   # Flyway logins live under <prefix>/db/ (see modules/database/logins.tf).
   rds_secrets   = "arn:${local.part}:secretsmanager:*:${local.account}:secret:rds!*"
   login_secrets = "arn:${local.part}:secretsmanager:*:${local.account}:secret:${local.p}/db/*"
+  ssn_secrets   = "arn:${local.part}:secretsmanager:*:${local.account}:secret:${local.p}/ssn/*"
   ci_roles      = "arn:${local.part}:iam::${local.account}:role/${local.p}-github-*"
 
   # Roles the main stack creates. Each must carry the workload boundary
@@ -116,5 +117,73 @@ data "aws_iam_policy_document" "deny_db_secret" {
     effect    = "Deny"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [local.rds_secrets, local.login_secrets]
+  }
+}
+
+# Shared guardrail: no CI role can use the SSN key or read or set the SSN
+# secrets (the HMAC pepper). Terraform never reads the pepper: it creates
+# the secret but not its value, and an operator sets the value out of band.
+# The key is matched by its alias, because its ARN doesn't exist when
+# bootstrap runs. The SSN key policy (modules/ssn_vault) already gives no
+# CI role any crypto on the key; these denies hold even if that policy is
+# widened later.
+data "aws_iam_policy_document" "deny_ssn_material" {
+  statement {
+    sid       = "NoSsnKeyEncrypt"
+    effect    = "Deny"
+    actions   = ["kms:Encrypt", "kms:ReEncrypt*"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = [local.ssn_key_alias]
+    }
+  }
+
+  # Creating a secret with this key makes Secrets Manager run a throwaway
+  # GenerateDataKey and Decrypt as the caller, with SecretVersionId
+  # RequestToValidateKeyAccess. The apply role creates the pepper secret in
+  # a new environment, so only that check gets through. The two statements
+  # deny any call made outside Secrets Manager, and any call that isn't
+  # that check.
+  statement {
+    sid       = "NoSsnKeyOutsideSecretsManager"
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = [local.ssn_key_alias]
+    }
+    condition {
+      test     = "StringNotEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${local.region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "NoSsnKeyExceptKeyCheck"
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = [local.ssn_key_alias]
+    }
+    condition {
+      test     = "StringNotEquals"
+      variable = "kms:EncryptionContext:SecretVersionId"
+      values   = ["RequestToValidateKeyAccess"]
+    }
+  }
+
+  statement {
+    sid       = "NoSsnSecretValues"
+    effect    = "Deny"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+    resources = [local.ssn_secrets]
   }
 }

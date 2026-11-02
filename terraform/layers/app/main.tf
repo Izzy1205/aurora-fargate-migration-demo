@@ -89,6 +89,12 @@ module "ssn_vault" {
 
   name_prefix            = local.name_prefix
   db_cluster_resource_id = data.aws_rds_cluster.this.cluster_resource_id
+
+  # The key policy names the vault task role. Its arn attribute (not a
+  # built string) makes Terraform create the role before the key, and KMS
+  # rejects a key policy naming a role that doesn't exist yet. No cycle:
+  # the role itself doesn't use the key, only its policy does.
+  vault_task_role_arn = module.ssn_vault_service.task_role_arn
 }
 
 # The app only forwards /ssn to the vault service, so its task role gets
