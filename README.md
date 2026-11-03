@@ -78,6 +78,10 @@ Proven on AWS on 2026-11-02, all at commit `6ddddb0`:
 - An AWS account and the AWS CLI signed in
 - Terraform 1.17.0 and Terragrunt 1.2.1
 - Apply `terraform/bootstrap` once (state bucket and GitHub OIDC roles)
+- Or use the script: `scripts/bootstrap.sh state-bucket`, then
+  `scripts/bootstrap.sh <testing|stage|production|all>`. It plans, asks
+  before it applies, and sets the role ARN variables on the env's GitHub
+  environments. `--dry-run` and `--help` show the rest.
 - Repo variables: `TF_STATE_BUCKET`, `AWS_REGION`, `OWNER`,
   `BUDGET_EMAIL`, `ALB_INGRESS_CIDRS` (your IP as a /32)
 - GitHub environments: `testing-infra-plan`, `testing-infra`, `testing-app`
