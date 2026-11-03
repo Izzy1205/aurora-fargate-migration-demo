@@ -86,7 +86,7 @@ jobs:
       app_image_id: ${{ steps.ids.outputs.app_image_id }}
       migrate_image_id: ${{ steps.ids.outputs.migrate_image_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: build images
         run: |
@@ -136,7 +136,7 @@ jobs:
       - name: save scanned images
         run: docker save -o images.tar "demo-app:$TAG" "demo-migrate:$TAG"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: images
           path: images.tar
@@ -171,7 +171,7 @@ jobs:
       TAG: ${{ github.sha }}
       APP_DESIRED_COUNT: ${{ needs.infra.outputs.desired_count }}  # app_desired_count in env.hcl
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: ./.github/actions/check-role
         with:
@@ -190,7 +190,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
       # Not rebuilt, so what ships is exactly what was scanned.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
 
