@@ -34,6 +34,11 @@ variable "github_repo" {
     condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repo))
     error_message = "Use the form owner/name."
   }
+
+  validation {
+    condition     = !strcontains(lower(var.github_repo), "replace-me")
+    error_message = "github_repo still has the REPLACE-ME placeholder. Set the real owner/name."
+  }
 }
 
 variable "github_plan_environment" {
@@ -63,6 +68,18 @@ variable "create_github_oidc_provider" {
 variable "state_bucket_name" {
   description = "State bucket. The plan role gets read and lock access to this environment's unit state keys."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.state_bucket_name))
+    error_message = "state_bucket_name must be a valid S3 bucket name (3 to 63 lowercase letters, digits, dots, dashes)."
+  }
+
+  # A placeholder here gives the plan role a lock policy for the wrong
+  # bucket, and the first promote fails with AccessDenied on the .tflock.
+  validation {
+    condition     = !strcontains(lower(var.state_bucket_name), "replace-me")
+    error_message = "state_bucket_name still has the REPLACE-ME placeholder. Set the real bucket name."
+  }
 }
 
 variable "state_key_prefix" {
