@@ -224,6 +224,13 @@ encryption header, AES256, unless `kms_key_id` is set. `root.hcl` and
   uploads that ask for SSE-S3. Uploads with no header still get the
   bucket default key. `bash scripts/tests/reencrypt-state.sh` checks the
   script with a fake aws.
+- After that, `deny_wrong_kms_key = true` makes the bucket refuse
+  uploads that name any other KMS key. It allows this key by ARN, key id,
+  alias name and alias ARN, since S3 doesn't document whether it resolves
+  an alias first. No key id header still gets the bucket default key.
+  CI can't create, move or delete the alias (`DenyCiKeyAdmin`).
+  Apply with `scripts/bootstrap.sh state-bucket --dry-run`, then without
+  `--dry-run`. To back it out, set it to false and run it again.
 
 Also needed:
 - Repo variables: `TF_STATE_BUCKET`, `AWS_REGION`, `OWNER`,
