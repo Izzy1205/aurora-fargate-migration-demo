@@ -25,9 +25,9 @@ bad() {
 # A copy of root.hcl and environments/, so the state-bucket tfvars written
 # here never touch the real one.
 tg=0
+mkdir -p "$tmp/terraform/state-bucket"
 if command -v terragrunt >/dev/null 2>&1; then
   tg=1
-  mkdir -p "$tmp/terraform/state-bucket"
   cp "$REPO_ROOT/terraform/root.hcl" "$tmp/terraform/"
   cp -R "$REPO_ROOT/terraform/environments" "$tmp/terraform/"
   rm -rf "$tmp/terraform/environments/testing/network/.terragrunt-cache"
