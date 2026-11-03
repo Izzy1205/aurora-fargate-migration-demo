@@ -160,6 +160,8 @@ module "waf" {
   alb_arn     = module.ecs.alb_arn
   rate_limit  = var.waf_rate_limit
   count_only  = var.waf_count_only
+
+  geo_allow_countries = var.waf_geo_allow_countries
 }
 
 module "budget" {

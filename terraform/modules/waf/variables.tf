@@ -47,6 +47,17 @@ variable "count_only" {
   default     = false
 }
 
+variable "geo_allow_countries" {
+  description = "ISO 3166-1 alpha-2 country codes the WAF lets through; everything else is blocked (or counted with count_only). Empty turns the rule off."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.geo_allow_countries : can(regex("^[A-Z]{2}$", c))])
+    error_message = "Use two-letter upper case ISO country codes, such as US."
+  }
+}
+
 variable "log_retention_days" {
   description = "CloudWatch retention for the WAF log group."
   type        = number

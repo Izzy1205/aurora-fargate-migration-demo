@@ -132,6 +132,12 @@ variable "waf_count_only" {
   type        = bool
 }
 
+variable "waf_geo_allow_countries" {
+  description = "ISO country codes the WAF lets through. Everything else gets a 403. Empty turns the geo rule off. Set per environment in env.hcl."
+  type        = list(string)
+  default     = []
+}
+
 variable "domain_name" {
   description = "DNS name for the ALB with a public ACM cert. Null means a self-signed cert. Set per environment in env.hcl."
   type        = string

@@ -23,9 +23,13 @@ locals {
   ssn_vault_desired_count = 2 # one per AZ
   budget_limit_usd        = 25
 
-  # Count-only for first rollout. Flip to false after checking WAF logs.
+  # Blocking, same as testing. waf_count_only = true counts instead, for a
+  # first rollout of new rules; read the WAF logs, then set it back.
   waf_rate_limit = 1000
-  waf_count_only = true
+  waf_count_only = false
+
+  # The WAF answers 403 to any country not listed. [] turns the rule off.
+  waf_geo_allow_countries = ["US"]
 
   # HTTPS cert. Null for both means a self-signed cert (curl -k). For a real
   # one, set a name in a public Route 53 zone you own, for example
