@@ -1,8 +1,10 @@
-# Copy to terraform.tfvars (gitignored) and fill in.
-# Then run: ./scripts/bootstrap.sh state-bucket
-owner               = "REPLACE-ME-owner"
-expected_account_id = "REPLACE-ME"
-bucket_name         = "REPLACE-ME-tfstate-bucket"
+# scripts/bootstrap.sh state-bucket writes terraform.tfvars (gitignored)
+# for you if it's missing. Copy this by hand only to pick other values.
+owner       = "REPLACE-ME-owner"
+bucket_name = "REPLACE-ME-tfstate-bucket"
+
+# Optional pin. When set, the scripts and the plan stop on any other account.
+# expected_account_id = "123456789012"
 # aws_region        = "us-east-2"
 
 # Default encryption with a customer managed key. false keeps SSE-S3.

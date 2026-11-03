@@ -38,12 +38,16 @@ Options:
 
 Before you run it:
   - Sign in to AWS (aws login). The script signs in if there's no session.
-  - Set MIGDEMO_ACCOUNT_ID, or expected_account_id in
-    terraform/state-bucket/terraform.tfvars. It stops on any other account.
+  - The account comes from aws sts get-caller-identity and is shown in
+    the preflight. To pin it, set MIGDEMO_ACCOUNT_ID or expected_account_id
+    in terraform/state-bucket/terraform.tfvars. A pinned run stops on any
+    other account.
   - Copy each *.tfvars.example to its tfvars and replace every REPLACE-ME.
       testing:    terraform/bootstrap/terraform.tfvars
       stage:      terraform/bootstrap/stage.tfvars
       production: terraform/bootstrap/production.tfvars
+    state-bucket writes terraform/state-bucket/terraform.tfvars for you if
+    it's missing, from the testing tfvars and the signed in account.
   - gh auth login, for the GitHub step.
 
 Every run is logged to logs/<timestamp>-<command>.log (gitignored).
@@ -359,18 +363,6 @@ cmd_bootstrap() {
   info "Done."
 }
 
-# Tagged resources still up in the env, not counting the bootstrap's own.
-env_resources_left() {
-  local project="$1" env="$2" region="$3"
-  aws resourcegroupstaggingapi get-resources --region "$region" \
-    --tag-filters "Key=Project,Values=$project" "Key=Environment,Values=$env" \
-    --output json |
-    jq -r '.ResourceTagMappingList[]
-      | select((.Tags // []) | map(select(.Key == "ManagedBy" and .Value == "terraform-bootstrap")) | length == 0)
-      | select(.ResourceARN | contains(":iam::") | not)
-      | .ResourceARN'
-}
-
 role_exists() {
   aws iam get-role --role-name "$1" >/dev/null 2>&1
 }
@@ -427,14 +419,65 @@ cmd_destroy() {
   info "[$env] bootstrap destroyed. Its GitHub environment variables are left in place and now point at deleted roles."
 }
 
+# Suggested state bucket name: TF_STATE_BUCKET, then state_bucket_name in
+# the testing tfvars, then <owner>-<project>-tfstate-<year>.
+suggest_bucket() {
+  local owner="$1" name="${TF_STATE_BUCKET:-}"
+  if [[ -z "$name" && -f "$BOOT_TFVARS" ]]; then
+    name=$(hcl_value state_bucket_name "$BOOT_TFVARS")
+  fi
+  [[ "$name" == *REPLACE-ME* ]] && name=""
+  [[ -n "$name" ]] || name="$owner-$(resolve_project)-tfstate-$(date +%Y)"
+  printf '%s\n' "$name" | tr '[:upper:]' '[:lower:]'
+}
+
+# Writes terraform/state-bucket/terraform.tfvars after one confirmation.
+# The account goes in as the pin, so later runs stop on any other account.
+write_state_bucket_tfvars() {
+  local f="$1" owner region bucket
+  owner=$(resolve_owner "")
+  [[ -n "$owner" ]] || die "No owner to put in ${f#"$REPO_ROOT"/}. Fill in owner in terraform/bootstrap/terraform.tfvars or set MIGDEMO_OWNER."
+  region=$(resolve_region)
+  bucket=$(suggest_bucket "$owner")
+
+  info "${f#"$REPO_ROOT"/} is missing. This is what would go in it:"
+  local body
+  body=$(
+    cat <<EOF
+# Written by scripts/bootstrap.sh state-bucket. Gitignored.
+# See terraform.tfvars.example for the other settings.
+owner               = "$owner"
+expected_account_id = "$ACCOUNT_ID"
+bucket_name         = "$bucket"
+aws_region          = "$region"
+EOF
+  )
+  printf '%s\n' "$body" | sed 's/^/  /'
+  info "Bucket names are global and can't be renamed. To pick another one, type anything else and copy terraform.tfvars.example by hand."
+  confirm yes "write it and go on"
+  printf '%s\n' "$body" >"$f"
+  info "Wrote ${f#"$REPO_ROOT"/}"
+}
+
 cmd_state_bucket() {
-  local f="$SB_DIR/terraform.tfvars" bucket region import=false mode data=".terraform" plan="state-bucket.tfplan"
+  local f="$SB_DIR/terraform.tfvars" bucket region owner import=false mode data=".terraform" plan="state-bucket.tfplan"
   NO_GITHUB=1
   preflight_common
+  [[ -f "$f" ]] || write_state_bucket_tfvars "$f"
   check_tfvars_file "$f"
   bucket=$(hcl_value bucket_name "$f")
   region=$(resolve_region "$f")
   [[ -n "$bucket" ]] || die "bucket_name is not set in ${f#"$REPO_ROOT"/}."
+
+  # Owner and region default from the testing tfvars when this file
+  # doesn't set them, so the same values aren't typed twice.
+  local var_args=()
+  if [[ -z "$(hcl_value owner "$f")" ]]; then
+    owner=$(resolve_owner "")
+    [[ -n "$owner" ]] || die "Set owner in ${f#"$REPO_ROOT"/} or terraform/bootstrap/terraform.tfvars."
+    var_args+=(-var="owner=$owner")
+  fi
+  [[ -n "$(hcl_value aws_region "$f")" ]] || var_args+=(-var="aws_region=$region")
 
   local backend_args=(
     -backend-config="bucket=$bucket"
@@ -466,7 +509,7 @@ cmd_state_bucket() {
   fi
 
   info "[state-bucket] plan"
-  tf_in "$SB_DIR" "$data" plan -input=false -var="import_existing_bucket=$import" -out="$plan"
+  tf_in "$SB_DIR" "$data" plan -input=false -var="import_existing_bucket=$import" ${var_args[@]+"${var_args[@]}"} -out="$plan"
   summarize_plan "$SB_DIR" "$data" "$plan"
   if ((PLAN_DELETES > 0)); then
     warn "This plan destroys or replaces $PLAN_DELETES resource(s). Read the list above before you confirm."

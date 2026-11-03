@@ -22,11 +22,16 @@ name: deploy
 on:
   push:
     branches: [main]
-    # Docs and the local teardown script don't change what's deployed.
+    # Docs, the local operator scripts and the hand-applied bootstrap and
+    # state bucket roots don't change what's deployed.
     paths-ignore:
       - README.md
       - docs/**
       - scripts/teardown.sh
+      - scripts/bootstrap.sh
+      - scripts/lib.sh
+      - terraform/bootstrap/**
+      - terraform/state-bucket/**
   workflow_dispatch:
     inputs:
       env:

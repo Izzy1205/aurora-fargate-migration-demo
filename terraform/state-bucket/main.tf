@@ -35,7 +35,7 @@ resource "aws_s3_bucket" "state" {
     prevent_destroy = true
 
     precondition {
-      condition     = local.account_id == var.expected_account_id
+      condition     = var.expected_account_id == null || local.account_id == var.expected_account_id
       error_message = "The AWS credentials are not for expected_account_id. Sign in to the right account."
     }
   }

@@ -99,18 +99,36 @@ stop if one is too old.
   Install: https://openssl-library.org/source/ (most systems have it)
 - git. Install: https://git-scm.com/downloads
 - bash. Git Bash on Windows works. macOS and Linux have it.
+- Terragrunt and Terraform are only needed for `scripts/teardown.sh`
+  and the bootstrap, not for the pipeline.
+
+Git Bash on Windows:
+- Git Bash doesn't always see what winget or an installer put on the
+  Windows PATH, even after a restart. The scripts tell you which tool
+  they can't find.
+- jq: put `jq.exe` in `~/bin`, which Git Bash adds to the PATH:
+  `mkdir -p ~/bin && curl -L -o ~/bin/jq.exe https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-amd64.exe`
+- gh: the installer puts it in `/c/Program Files/GitHub CLI`. Add it:
+  `echo 'export PATH="$PATH:/c/Program Files/GitHub CLI"' >> ~/.bashrc`
+- If `~/bin` isn't on the PATH either, add it the same way:
+  `echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc`
+- Then open a new Git Bash window, or run `source ~/.bashrc`.
 - A GitHub account with admin on the repo, to create the environments,
   rulesets and variables.
 - An AWS account you can sign in to with admin rights, for the bootstrap.
 
 Set up from zero, from the repo root:
-1. Fill in the tfvars. Copy `terraform/state-bucket/terraform.tfvars.example`
-   and each `terraform/bootstrap/*.tfvars.example` to the same name
-   without `.example` (testing is `terraform.tfvars`) and replace every
-   `REPLACE-ME`. The script stops if one is left.
-2. `scripts/bootstrap.sh state-bucket`, once. The first run imports the
-   bucket if it already exists, or creates it, then moves its own state
-   into the bucket. The scripts never destroy the state bucket.
+1. Fill in the tfvars. Copy each `terraform/bootstrap/*.tfvars.example`
+   to the same name without `.example` (testing is `terraform.tfvars`)
+   and replace every `REPLACE-ME`. The script stops if one is left.
+2. `scripts/bootstrap.sh state-bucket`, once. If
+   `terraform/state-bucket/terraform.tfvars` is missing it writes one
+   from the testing tfvars and the account you're signed in to, shows
+   it, and asks once. The bucket name defaults to `state_bucket_name`,
+   or `<owner>-migdemo-tfstate-<year>` if that isn't set. The first run
+   imports the bucket if it already exists, or creates it, then moves
+   its own state into the bucket. The scripts never destroy the state
+   bucket.
 3. Make the GitHub environments: `<env>-infra-plan`, `<env>-infra`,
    `<env>-app` for each env you'll run. The script sets variables on
    them but doesn't create them.
@@ -119,7 +137,7 @@ Set up from zero, from the repo root:
    goes first because it makes the GitHub OIDC provider the others use.
    One run does:
    - preflight: tool versions, AWS session (runs `aws login` if there's
-     none), the right account, tfvars with no `REPLACE-ME`, `gh` signed in
+     none), the account, tfvars with no `REPLACE-ME`, `gh` signed in
    - init and plan for each env, with a summary of what changes
    - one typed confirmation for all the plans
    - apply the saved plans, nothing re-planned
@@ -129,6 +147,10 @@ Set up from zero, from the repo root:
    `--dry-run` stops after the plan and shows which GitHub variables
    would change. `--no-github` skips the GitHub step and prints the
    `gh variable set` commands instead. Every run logs to `logs/`.
+   The account comes from `aws sts get-caller-identity`. To pin it, set
+   `MIGDEMO_ACCOUNT_ID` or `expected_account_id` in
+   `terraform/state-bucket/terraform.tfvars` (the generated file sets
+   it). A pinned run stops on any other account.
 5. Deploy. Merging to main deploys testing. Then run `promote.yml` to
    stage, then to production (section 3).
 6. Tear down with `scripts/teardown.sh` (section 5).
@@ -205,19 +227,47 @@ For stage and production, on top of that:
 
 5) How it tears down
 Teardown is manual on purpose so the pipeline can never delete things
-on its own. Sign in to AWS first, since an expired session partway
-through leaves a mess. From the repo root, run
-`./scripts/teardown.sh <env>`, check each plan, and type yes. Go
-production first, then stage, then testing.
+on its own. From the repo root:
 
-The bootstrap (CI roles and the state bucket) stays until you remove it
-yourself. To retire an env for good, tear it down, then run
+```bash
+./scripts/teardown.sh testing --dry-run
+./scripts/teardown.sh testing
+```
+
+Use `stage`, `production` or `all` the same way. `all` goes
+production, then stage, then testing, and skips any env with nothing
+up. One run does:
+- preflight: tool versions, an AWS session (a real run always signs in
+  fresh), and the account, region and tagged resource count for each env
+- a destroy plan for each unit, observability, app, data, network, with
+  a summary
+- one typed confirmation, the env name or `all`
+- apply the saved plans in that order, nothing re-planned. It checks the
+  AWS session before each unit and signs in again if it ran out. It
+  stops at the first failure. Run it again after a fix and the units
+  that are already gone plan as no changes and get skipped.
+- check that nothing is left: RDS, ALB, ECS, VPC endpoints, VPC, WAF.
+  It exits non-zero if anything is.
+
+`--dry-run` stops after the plans. Every run logs to `logs/`.
+
+The units need the same values the pipeline passes in. It reads
+`TF_STATE_BUCKET` and `MIGDEMO_OWNER` from the testing bootstrap tfvars,
+and `MIGDEMO_BUDGET_EMAIL` and `MIGDEMO_ALB_INGRESS_CIDRS` from the
+`BUDGET_EMAIL` and `ALB_INGRESS_CIDRS` repo variables with `gh`. Set
+any of them in the environment to override.
+
+Tearing down testing while stage or production is up, or stage while
+production is up, warns first. Stage and production promote by digest
+from the env before them, and tearing down testing deletes its images,
+so nothing can be promoted until testing is deployed again. It deletes
+the backups too.
+
+Teardown never touches the bootstrap (CI roles) or the state bucket. To
+retire an env for good, tear it down, then run
 `scripts/bootstrap.sh destroy <env>`. It refuses while the env still
 has tagged resources, and refuses testing while stage or production
-still has a bootstrap. No script destroys the state bucket. Stage can be promoted again by digest as long as testing's
-images exist. Tearing down testing deletes its images, so nothing can be
-promoted to stage until testing is deployed again. It deletes the
-backups too.
+still has a bootstrap. No script destroys the state bucket.
 
 6) How I built this
 I designed it, ran it, and debugged it myself, and I used an AI

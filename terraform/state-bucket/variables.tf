@@ -31,11 +31,12 @@ variable "owner" {
 }
 
 variable "expected_account_id" {
-  description = "AWS account the bucket must live in. The plan fails if the credentials are for another account."
+  description = "Optional pin. AWS account the bucket must live in. When set, the plan fails if the credentials are for another account."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(regex("^[0-9]{12}$", var.expected_account_id))
+    condition     = var.expected_account_id == null || can(regex("^[0-9]{12}$", var.expected_account_id))
     error_message = "expected_account_id must be a 12 digit AWS account ID."
   }
 }
