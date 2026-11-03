@@ -120,6 +120,45 @@ run "testing_denies" {
     error_message = "NoOtherEnvState must not deny testing's own state or plans."
   }
 
+  # State key: every role is denied it outside S3.
+  assert {
+    condition = alltrue([
+      for p in [aws_iam_role_policy.plan.policy, aws_iam_role_policy.deploy.policy] :
+      contains([for s in jsondecode(p).Statement : s.Sid], "NoStateKeyOutsideS3")
+    ])
+    error_message = "Plan and deploy need NoStateKeyOutsideS3."
+  }
+
+  # Apply's JSON isn't known at plan, but its source documents are.
+  assert {
+    condition = contains(
+      data.aws_iam_policy_document.apply.source_policy_documents,
+      data.aws_iam_policy_document.deny_state_key_outside_s3.json,
+    )
+    error_message = "Apply needs NoStateKeyOutsideS3."
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.deny_state_key_outside_s3.json).Statement : (
+        s.Effect == "Deny" &&
+        s.Condition["ForAnyValue:StringEquals"]["kms:ResourceAliases"] == "alias/migdemo-tfstate" &&
+        s.Condition["StringNotLike"]["kms:ViaService"] == "s3.*.amazonaws.com" &&
+        contains(s.Action, "kms:Decrypt") && contains(s.Action, "kms:GenerateDataKey*")
+      )
+    ])
+    error_message = "NoStateKeyOutsideS3 must deny the tfstate alias for any call not made through S3."
+  }
+
+  # The plan role stays read only: no KMS allow of its own. It reaches the
+  # state key only through S3, from the key policy.
+  assert {
+    condition = !anytrue([
+      for s in jsondecode(aws_iam_role_policy.plan.policy).Statement :
+      s.Effect == "Allow" && anytrue([for a in flatten([s.Action]) : startswith(a, "kms:")])
+    ])
+    error_message = "The plan role must not get a KMS allow."
+  }
 }
 
 run "production_peers" {

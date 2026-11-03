@@ -5,6 +5,8 @@
 #   production: key=aurora-fargate-migration-demo/bootstrap-production.tfstate
 #   terraform init -reconfigure -backend-config=../backend.hcl \
 #     -backend-config="key=aurora-fargate-migration-demo/bootstrap-stage.tfstate"
+# scripts/bootstrap.sh also passes kms_key_id=alias/migdemo-tfstate (the
+# state bucket's key) so state is SSE-KMS, not AES256.
 terraform {
   backend "s3" {
     use_lockfile = true

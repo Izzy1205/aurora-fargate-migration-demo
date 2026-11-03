@@ -16,6 +16,7 @@ data "aws_iam_policy_document" "plan" {
     data.aws_iam_policy_document.deny_db_secret.json,
     data.aws_iam_policy_document.deny_ssn_material.json,
     data.aws_iam_policy_document.deny_other_state.json,
+    data.aws_iam_policy_document.deny_state_key_outside_s3.json,
     data.aws_iam_policy_document.deny_peer_envs.json,
     data.aws_iam_policy_document.deny_role_escalation.json,
   ]
@@ -71,6 +72,7 @@ data "aws_iam_policy_document" "apply" {
     data.aws_iam_policy_document.deny_db_secret.json,
     data.aws_iam_policy_document.deny_ssn_material.json,
     data.aws_iam_policy_document.deny_other_state.json,
+    data.aws_iam_policy_document.deny_state_key_outside_s3.json,
     data.aws_iam_policy_document.deny_peer_envs.json,
     data.aws_iam_policy_document.deny_role_escalation.json,
   ]
@@ -265,6 +267,7 @@ data "aws_iam_policy_document" "deploy" {
   source_policy_documents = [
     data.aws_iam_policy_document.deny_db_secret.json,
     data.aws_iam_policy_document.deny_ssn_material.json,
+    data.aws_iam_policy_document.deny_state_key_outside_s3.json,
     data.aws_iam_policy_document.deny_peer_envs.json,
     data.aws_iam_policy_document.deny_role_escalation.json,
   ]

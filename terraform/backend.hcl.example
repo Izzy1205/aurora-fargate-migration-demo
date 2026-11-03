@@ -9,3 +9,5 @@
 bucket = "REPLACE-ME-tfstate-bucket"
 key    = "aurora-fargate-migration-demo/bootstrap.tfstate"
 region = "us-east-1" # wherever the bucket lives. Terragrunt reads TF_STATE_REGION for the same thing.
+# The state bucket's key. Leave it out if the bucket was made with use_kms = false.
+kms_key_id = "alias/migdemo-tfstate"

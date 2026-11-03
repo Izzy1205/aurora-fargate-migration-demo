@@ -51,6 +51,32 @@ data "aws_iam_policy_document" "bucket" {
     }
   }
 
+  # Off by default. Until every backend sets kms_key_id, Terraform sends
+  # AES256 on state and lock writes and this would block them. Uploads
+  # with no header still go through and get the bucket default key, which
+  # is how tg-plan.yml uploads saved plans. UploadPart has no header either.
+  dynamic "statement" {
+    for_each = var.use_kms && var.deny_non_kms_uploads ? [1] : []
+
+    content {
+      sid       = "DenyNonKmsUploads"
+      effect    = "Deny"
+      actions   = ["s3:PutObject"]
+      resources = ["${local.bucket_arn}/*"]
+
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+
+      condition {
+        test     = "StringNotEqualsIfExists"
+        variable = "s3:x-amz-server-side-encryption"
+        values   = ["aws:kms"]
+      }
+    }
+  }
+
   # CI reads and writes state and plans but never changes the bucket
   # (root.hcl sets disable_bucket_update). Plain DeleteObject stays allowed
   # because the backend removes its lock file that way.
