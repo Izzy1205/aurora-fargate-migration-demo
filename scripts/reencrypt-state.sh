@@ -67,7 +67,7 @@ main() {
   [[ -n "$bucket" ]] || die "Set TF_STATE_BUCKET, or bucket_name in terraform/state-bucket/terraform.tfvars."
   region="${TF_STATE_REGION:-$(resolve_region "$SB_TFVARS")}"
   kms=$(state_kms_key)
-  [[ -n "$kms" ]] || die "terraform/state-bucket sets use_kms = false, so there's no state key."
+  [[ -n "$kms" ]] || die "No state key: use_kms = false in terraform/state-bucket, or TF_STATE_KMS_KEY is empty."
 
   log_init reencrypt-state
   ((DRY_RUN)) && info "Dry run"

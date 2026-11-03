@@ -190,9 +190,17 @@ State encryption: the state bucket's default is SSE-KMS with
 `alias/migdemo-tfstate`, but Terraform's S3 backend sends its own
 encryption header, AES256, unless `kms_key_id` is set. `root.hcl` and
 `scripts/bootstrap.sh` set it, so state and lock files use the key.
-`TF_STATE_KMS_KEY` overrides the alias. If the state bucket was made with
-`use_kms = false` there's no key: bootstrap.sh leaves it out, and
-`root.hcl` needs its `kms_key_id` line removed.
+- Which key: `TF_STATE_KMS_KEY` when it's set, and set but empty
+  (`export TF_STATE_KMS_KEY=`) means no key. Otherwise both follow
+  `use_kms` in `terraform/state-bucket/terraform.tfvars`: with
+  `use_kms = false` there's no key, so `kms_key_id` is left off and state
+  is SSE-S3. No tfvars file, or no `use_kms` in it, means the key.
+- CI has no state-bucket tfvars, so it always uses the key. If the bucket
+  was made with `use_kms = false`, add `TF_STATE_KMS_KEY: ""` to the
+  env of the workflows that run terragrunt (`pr.yml`, `infra.yml`,
+  `tg-plan.yml`, `tg-apply.yml`).
+  `bash scripts/tests/state-kms-key.sh` checks root.hcl and bootstrap.sh
+  agree.
 - Access: the key policy lets the CI roles use the key only through S3,
   only for this bucket, and only Decrypt and GenerateDataKey, which is
   all SSE-KMS needs. Every CI role is denied the key outside S3

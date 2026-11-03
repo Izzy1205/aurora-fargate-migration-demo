@@ -172,11 +172,13 @@ if [[ ! -f "$BOOT_TFVARS" && -f "$REPO_ROOT/terraform/bootstrap/terraform.tfvars
 fi
 SB_TFVARS="$REPO_ROOT/terraform/state-bucket/terraform.tfvars"
 
-# KMS key the backends encrypt state with: TF_STATE_KMS_KEY, or the alias
-# terraform/state-bucket makes. Empty when that root sets use_kms = false,
-# since there's no key then. Keep this in step with root.hcl.
+# KMS key the backends encrypt state with. TF_STATE_KMS_KEY when it's set,
+# and set but empty means no key. Otherwise empty when the state-bucket
+# tfvars set use_kms = false, since there's no key then, and the alias
+# terraform/state-bucket makes in every other case. root.hcl does the same,
+# scripts/tests/state-kms-key.sh checks both agree.
 state_kms_key() {
-  if [[ -n "${TF_STATE_KMS_KEY:-}" ]]; then
+  if [[ -n "${TF_STATE_KMS_KEY+set}" ]]; then
     printf '%s\n' "$TF_STATE_KMS_KEY"
   elif [[ -f "$SB_TFVARS" && "$(hcl_raw use_kms "$SB_TFVARS")" == false ]]; then
     printf '\n'

@@ -13,6 +13,17 @@ locals {
 
   # testing/network, testing/data, testing/app and so on.
   unit_path = trimprefix(replace(path_relative_to_include(), "\\", "/"), "environments/")
+
+  # State key. TF_STATE_KMS_KEY wins when it's set, and set but empty means
+  # no key. Otherwise follow use_kms in the state-bucket tfvars, same as
+  # scripts/lib.sh, and default to the key when that file isn't there (CI).
+  # try() covers a missing file (HCL evaluates both sides of a ?:) and one
+  # that won't parse. Both fall back to the key.
+  sb_tfvars   = "${dirname(find_in_parent_folders("root.hcl"))}/state-bucket/terraform.tfvars"
+  sb_use_kms  = try(jsondecode(read_tfvars_file(local.sb_tfvars)).use_kms, true)
+  kms_env     = get_env("TF_STATE_KMS_KEY", "unset")
+  kms_default = local.sb_use_kms ? "alias/${local.project}-tfstate" : ""
+  kms_key_id  = local.kms_env == "unset" ? local.kms_default : local.kms_env
 }
 
 # One state object per unit:
@@ -25,7 +36,10 @@ locals {
 # both the state and the .tflock. Without it the backend sends AES256 and
 # the bucket default key never applies. The alias is the one
 # terraform/state-bucket makes. An alias name resolves in the caller's
-# account, so no account ID is needed here. TF_STATE_KMS_KEY overrides it.
+# account, so no account ID is needed here. With no key (use_kms = false
+# or TF_STATE_KMS_KEY="") kms_key_id is left out, not set to "": the
+# backend rejects "" as an invalid key ID, and with no kms_key_id and
+# encrypt = true it sends AES256 (SSE-S3).
 #   https://developer.hashicorp.com/terraform/language/backend/s3#kms_key_id
 #   https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
 remote_state {
@@ -36,16 +50,18 @@ remote_state {
     if_exists = "overwrite_terragrunt"
   }
 
-  config = {
-    bucket       = local.env.state_bucket
-    key          = "aurora-fargate-migration-demo/${local.unit_path}/terraform.tfstate"
-    region       = get_env("TF_STATE_REGION", local.aws_region)
-    encrypt      = true
-    kms_key_id   = get_env("TF_STATE_KMS_KEY", "alias/${local.project}-tfstate")
-    use_lockfile = true
+  config = merge(
+    {
+      bucket       = local.env.state_bucket
+      key          = "aurora-fargate-migration-demo/${local.unit_path}/terraform.tfstate"
+      region       = get_env("TF_STATE_REGION", local.aws_region)
+      encrypt      = true
+      use_lockfile = true
 
-    disable_bucket_update = true
-  }
+      disable_bucket_update = true
+    },
+    local.kms_key_id == "" ? {} : { kms_key_id = local.kms_key_id },
+  )
 }
 
 # Same provider and tags the flat stack had. Owner comes from MIGDEMO_OWNER

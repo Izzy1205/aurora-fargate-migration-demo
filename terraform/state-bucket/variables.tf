@@ -63,7 +63,7 @@ variable "import_existing_bucket" {
 }
 
 variable "use_kms" {
-  description = "Default bucket encryption with a customer managed KMS key (true) or SSE-S3 (false)."
+  description = "Default bucket encryption with a customer managed KMS key (true) or SSE-S3 (false). root.hcl and scripts/bootstrap.sh read this from terraform.tfvars and leave kms_key_id off the backends when it's false. CI doesn't have this file, so with false also set TF_STATE_KMS_KEY to an empty string in the workflows that run terragrunt."
   type        = bool
   default     = true
 }
