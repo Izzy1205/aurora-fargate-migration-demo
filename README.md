@@ -10,12 +10,17 @@ to patch, upgrade, and prove secure.
 
 2) What this repo does
 - Runs the app in containers on ECS Fargate behind a load balancer
-- Puts a WAF in front to block common attacks and rate limit by IP.
-  Testing blocks. Stage and production run it count only for now
-  (`waf_count_only` in env.hcl).
-- Serves plain HTTP, locked to one IP. HTTPS needs a domain for an ACM
-  cert, and the demo doesn't have one. In prod it's a 443 listener with
-  80 redirecting to it.
+- Puts a WAF in front to block common attacks, anonymizing proxies and
+  requests from outside the US, and to rate limit by IP. Every
+  environment blocks. `waf_count_only = true` in env.hcl switches an
+  environment to count only, for trying new rules; `waf_geo_allow_countries`
+  sets the allowed countries (`[]` turns that rule off).
+- Serves HTTPS on 443, locked to one IP, with TLS 1.3 and 1.2 only
+  (`ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09`). Port 80 only answers
+  with a 301 to HTTPS. With no domain, the cert is self-signed and
+  imported into ACM for free, so browsers warn and curl needs `-k`. Set
+  `domain_name` and `route53_zone_id` in env.hcl to get a public ACM cert
+  instead (see section 4).
 - Stores data in Aurora PostgreSQL. The app and Flyway each log in as
   their own role with a password in Secrets Manager. The app can only
   read and write rows; Flyway owns the schema. The master password stays
@@ -44,7 +49,10 @@ Everything is Terraform, organized with Terragrunt into four layers:
 network, data, app, and observability. Every pull request runs a plan
 plus security scans. Merging to main deploys to testing on its own. If
 a plan would delete or replace something, the pipeline stops and a
-person has to handle it.
+person has to handle it. The one exception is the self-signed TLS key
+and cert, which only exist in Terraform state: renewing them (yearly,
+30 days early) replaces them, and the ACM cert takes the new PEM in
+place.
 
 Only testing builds images. Stage and production get the same image,
 by digest, through `promote.yml`: testing to stage, then stage to
@@ -100,7 +108,25 @@ For stage and production, on top of that:
   set.
 - Smoke test: `/health`, then `/ssn/tokenize` with a fake 9xx SSN.
   Stage and production need `X-Caller: claimant-signup`. `demo` only
-  works in testing.
+  works in testing. Use the `app_url` output (https). With the
+  self-signed cert, add `-k`:
+  `curl -k "$ALB/health"`. To check the cert instead of skipping the
+  check, save the `self_signed_cert_pem` output to a file and use
+  `curl --cacert alb.pem "$ALB/health"`. `http://` still works and
+  answers 301 to the https URL.
+- A real cert: put a public Route 53 hosted zone for your domain in the
+  account, then set `domain_name` (for example `app.example.com`) and
+  `route53_zone_id` in that env's env.hcl. The plan requests an ACM
+  cert, validates it with DNS records in the zone, adds an alias record
+  to the ALB and points the listener at it. ACM renews it on its own.
+  Drop `-k` after that. The same plan deletes the self-signed cert from
+  ACM, and the pipeline's delete check stops any plan with a delete, so
+  that one switch is an apply you run by hand.
+- The WAF answers 403 to requests from outside `waf_geo_allow_countries`
+  (US by default) and to Tor exits, open proxies and VPN ranges. A smoke
+  test from a VPN or from abroad gets a 403 from the WAF, not the app.
+  Cloud provider IP ranges (`HostingProviderIPList`) are only counted,
+  not blocked.
 - Stage costs about $8 to $9 a day while it's up (multi-AZ endpoints, an
   Aurora floor that doesn't pause, ALB, WAF, four tasks). Bring it up to
   prove a release, then tear it down. Every budget is account-wide, so
@@ -411,9 +437,10 @@ Turning it on in an environment:
    `aws secretsmanager put-secret-value --secret-id <name_prefix>/ssn/hmac-pepper --secret-string "$(openssl rand -hex 32)"`
 4. The next `/ssn` request picks it up within 30 seconds. Check it with a
    fake SSN in the 9xx range (never a real one):
-   `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'`
+   `curl -k -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'`
    `demo` only works in testing. In stage or production send
-   `X-Caller: claimant-signup` instead. Do this once per env.
+   `X-Caller: claimant-signup` instead. Do this once per env. `$ALB`
+   is the https `app_url`; `-k` is for the self-signed cert.
 
 If it answers 503, the vault log (`/ecs/<name_prefix>/ssn-vault`) names
 the step that failed and nothing else, for example
@@ -456,7 +483,9 @@ In Git Bash, fake SSN only, all within 5 minutes for the refresh step
 (the re-auth headers must be under 5 minutes old):
 
 ```bash
-ALB=http://<your-alb-dns-name>
+# The self-signed cert needs -k. Drop it once domain_name is set.
+ALB=https://<your-alb-dns-name>
+curl() { command curl -k "$@"; }
 J="Content-Type: application/json"
 TOK=$(curl -s -X POST "$ALB/ssn/tokenize" -H "$J" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'); echo "$TOK"
 SEED=$(curl -s -X POST "$ALB/demo/seed-claim" -H "$J" -H "X-Actor: izzy" -d "$TOK"); echo "$SEED"
@@ -540,10 +569,6 @@ SSN service:
   `X-Caller`.
 
 Platform:
-- An HTTPS listener with an ACM cert, with 80 redirecting to it. The ALB
-  is HTTP only today.
-- Set `waf_count_only = false` in stage and production after reviewing
-  their WAF logs.
 - Pin first-party GitHub actions (`actions/checkout`, `actions/setup-python`
   and the rest) to commit SHAs. Most use version tags today.
 - Extend `stale-stack.yml` to stage. It only checks testing today.
