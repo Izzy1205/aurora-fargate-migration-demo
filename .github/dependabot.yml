@@ -22,8 +22,13 @@ updates:
       docker-minor:
         update-types: [minor, patch]
 
+  # Actions are pinned to commit SHAs with a "# vX.Y.Z" comment. Dependabot
+  # bumps the SHA and the comment together. "/" only reads .github/workflows,
+  # so the composite actions are listed too.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/*
     schedule:
       interval: weekly
     groups:

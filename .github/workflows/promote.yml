@@ -95,7 +95,7 @@ jobs:
             echo "sha=$sha"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -134,7 +134,7 @@ jobs:
       app_digest: ${{ steps.src.outputs.app_digest }}
       migrate_digest: ${{ steps.src.outputs.migrate_digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.sha }}
 
@@ -223,7 +223,7 @@ jobs:
       SHA: ${{ needs.setup.outputs.sha }}
       PROJECT: migdemo  # local.project in terraform/root.hcl
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.sha }}
 

@@ -41,7 +41,7 @@ jobs:
       MIGDEMO_ALB_INGRESS_CIDRS: ${{ vars.ALB_INGRESS_CIDRS }}
       MIGDEMO_ENV: testing
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
@@ -78,6 +78,8 @@ jobs:
         run: bash ../scripts/tests/state-kms-key.sh
 
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.65.0
 
       - name: tflint
         env:
@@ -182,7 +184,7 @@ jobs:
 
       - name: comment plan on PR
         if: steps.plan.outcome == 'success'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -203,7 +205,7 @@ jobs:
       SHELLCHECK_VERSION: "0.11.0"
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # bootstrap-tfvars.sh plans the bootstrap's variables.tf alone, so it
       # needs terraform. No providers, no backend, no AWS.
@@ -235,8 +237,8 @@ jobs:
     name: checkov (IaC security scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: checkov
@@ -248,12 +250,12 @@ jobs:
     name: gitleaks (secret scan of full history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: gitleaks
         run: |
-          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git /repo --redact --verbose
 
   migrations:
@@ -261,7 +263,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # Digest pinned. Dependabot doesn't bump images in workflow files, so
+        # bump this by hand.
+        image: postgres:16.15@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a
         env:
           # Throwaway container on the runner. Trust auth so there's no
           # password in the file at all, not even a fake one.
@@ -271,7 +275,7 @@ jobs:
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: build migration image
         run: docker build -t demo-migrate:ci db
@@ -383,8 +387,8 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
@@ -398,8 +402,8 @@ jobs:
     name: bandit (Python SAST)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       # Medium severity and confidence or higher fails. Tests are excluded
@@ -414,8 +418,8 @@ jobs:
     name: pip-audit (dependency CVEs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       # Any known CVE in the pins or their dependencies fails the job.
@@ -432,7 +436,7 @@ jobs:
       contents: read
       security-events: write  # upload results to the Security tab
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Built on the runner, never pushed.
       - name: build images
@@ -467,14 +471,14 @@ jobs:
       # Fork PRs get a read-only token, so only same-repo PRs upload.
       - name: upload app results to Security tab
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: trivy-app.sarif
           category: trivy-app-image
 
       - name: upload migration results to Security tab
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: trivy-migrate.sarif
           category: trivy-migrate-image
