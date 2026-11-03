@@ -191,6 +191,41 @@ jobs:
               body,
             });
 
+  scripts:
+    name: shellcheck / script tests
+    runs-on: ubuntu-latest
+    env:
+      SHELLCHECK_VERSION: "0.11.0"
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@v7
+
+      # bootstrap-tfvars.sh plans the bootstrap's variables.tf alone, so it
+      # needs terraform. No providers, no backend, no AWS.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: install shellcheck
+        run: |
+          curl -sSfLo /tmp/sc.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/sc.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/sc.tar.xz -C /tmp
+          sudo install "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/tests/*.sh
+
+      - name: script tests
+        run: |
+          for t in scripts/tests/*.sh; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
+
   iac-scan:
     name: checkov (IaC security scan)
     runs-on: ubuntu-latest

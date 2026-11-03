@@ -1,6 +1,8 @@
-# Testing CI roles. Copy to terraform.tfvars (gitignored) and fill in.
+# Testing CI roles. Copy to testing.tfvars (gitignored) and fill in.
 # Stage and production have their own stage.tfvars.example and
-# production.tfvars.example, each applied with its own state key (backend.tf).
+# production.tfvars.example. bootstrap.sh passes each env only its own file
+# with -var-file, and applies it with its own state key (backend.tf). Don't
+# name it terraform.tfvars, terraform would load that for every env.
 aws_region                  = "us-east-2"
 owner                       = "izzy"
 github_repo                 = "REPLACE-ME-github-user/aurora-fargate-migration-demo"
