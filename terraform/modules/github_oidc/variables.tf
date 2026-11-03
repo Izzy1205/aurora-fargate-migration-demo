@@ -1,6 +1,12 @@
 variable "name_prefix" {
   description = "Same project-environment prefix the main stack uses. Resource ARNs below are built from it."
   type        = string
+
+  # The cross-env denies take the project from this prefix.
+  validation {
+    condition     = endswith(var.name_prefix, "-${var.environment}") && length(var.name_prefix) > length(var.environment) + 1
+    error_message = "name_prefix must be <project>-<environment>."
+  }
 }
 
 variable "aws_region" {

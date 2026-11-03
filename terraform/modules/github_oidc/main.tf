@@ -131,19 +131,133 @@ data "aws_iam_policy_document" "trust" {
 # bootstrap state. Each env's roles keep full use of their own prefix.
 locals {
   state_key_root = trimsuffix(var.state_key_prefix, "/${var.environment}")
-  peer_envs      = setsubtract(["testing", "stage", "production"], [var.environment])
+  peer_envs      = sort(tolist(setsubtract(["testing", "stage", "production"], [var.environment])))
   other_state = concat(
-    [for e in sort(tolist(local.peer_envs)) : "arn:${local.part}:s3:::${var.state_bucket_name}/${local.state_key_root}/${e}/*"],
+    [for e in local.peer_envs : "arn:${local.part}:s3:::${var.state_bucket_name}/${local.state_key_root}/${e}/*"],
     ["arn:${local.part}:s3:::${var.state_bucket_name}/${local.state_key_root}/bootstrap*"],
+    # Saved plans hold the full config and prior state, sensitive values too.
+    [for e in local.peer_envs : "arn:${local.part}:s3:::${var.state_bucket_name}/${var.plans_prefix}/*/${e}/*"],
   )
 }
 
+# The wildcards also cover the *Version calls. The bucket is versioned and
+# ReadOnlyAccess allows s3:Get*, so GetObject alone would leave old
+# versions of the other envs' state readable.
 data "aws_iam_policy_document" "deny_other_state" {
   statement {
     sid       = "NoOtherEnvState"
     effect    = "Deny"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions   = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject"]
     resources = local.other_state
+  }
+}
+
+# Shared guardrail: the three envs share one account, and PowerUserAccess
+# reaches every secret and key in it. No CI role may touch another env's
+# secrets or SSN key. Own-env access is not changed here; the denies above
+# and below still apply to it.
+locals {
+  project       = trimsuffix(local.p, "-${var.environment}")
+  peer_prefixes = [for e in local.peer_envs : "${local.project}-${e}"]
+  # Covers <peer>/db/*, <peer>/ssn/* and any other secret named for the peer.
+  peer_secrets     = [for pp in local.peer_prefixes : "arn:${local.part}:secretsmanager:*:${local.account}:secret:${pp}*"]
+  peer_ssn_aliases = [for pp in local.peer_prefixes : "alias/${pp}-ssn"]
+}
+
+data "aws_iam_policy_document" "deny_peer_envs" {
+  statement {
+    sid       = "NoOtherEnvSecretsByName"
+    effect    = "Deny"
+    actions   = ["secretsmanager:*"]
+    resources = local.peer_secrets
+  }
+
+  # Same, for a peer secret with another name. default_tags in root.hcl put
+  # Project and Environment on every secret the main stack makes.
+  statement {
+    sid       = "NoOtherEnvSecretsByTag"
+    effect    = "Deny"
+    actions   = ["secretsmanager:*"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.project]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = local.peer_envs
+    }
+  }
+
+  # The SSN key policy delegates key admin to the account, so without this
+  # any env's apply role could rewrite a peer's key policy or delete the key.
+  # Matched by alias, like deny_ssn_material. Changing the alias needs
+  # rights on the key too, which this denies.
+  statement {
+    sid       = "NoOtherEnvSsnKey"
+    effect    = "Deny"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = local.peer_ssn_aliases
+    }
+  }
+
+  # Admin and destructive calls on any other peer key (queue, database).
+  # Crypto is left alone: nothing here needs it, but tag-only crypto denies
+  # are a bigger change than this fix.
+  statement {
+    sid    = "NoOtherEnvKeyAdmin"
+    effect = "Deny"
+    actions = [
+      "kms:PutKeyPolicy", "kms:CreateGrant", "kms:RevokeGrant", "kms:RetireGrant",
+      "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:DisableKeyRotation",
+      "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias",
+      "kms:TagResource", "kms:UntagResource", "kms:ReplicateKey",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.project]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = local.peer_envs
+    }
+  }
+}
+
+# Shared guardrail: no CI role assumes another role or changes the vault
+# roles' trust. None of the workflows
+# or providers chain roles. Without this the apply role could point a stack
+# role's trust at itself (it may update trust policies) and assume it,
+# which gets around the denies on itself. sts:GetCallerIdentity is not
+# affected, and this doesn't change who can assume the CI roles: the trust
+# policy decides that. Actions per the STS service authorization reference
+# (docs.aws.amazon.com/service-authorization/latest/reference/list_sts.html).
+data "aws_iam_policy_document" "deny_role_escalation" {
+  statement {
+    sid       = "NoRoleChaining"
+    effect    = "Deny"
+    actions   = ["sts:AssumeRole", "sts:TagSession", "sts:SetSourceIdentity", "sts:SetContext"]
+    resources = ["arn:${local.part}:iam::*:role/*"]
+  }
+
+  # The vault task role is the one principal the SSN key policy trusts, so
+  # its trust must stay ECS tasks. A trust change on it is done by hand.
+  # Other stack roles keep UpdateAssumeRolePolicy (Terraform needs it when
+  # a trust policy changes), and NoRoleChaining stops CI assuming them.
+  statement {
+    sid       = "NoVaultTrustChanges"
+    effect    = "Deny"
+    actions   = ["iam:UpdateAssumeRolePolicy"]
+    resources = [local.vault_roles]
   }
 }
 
