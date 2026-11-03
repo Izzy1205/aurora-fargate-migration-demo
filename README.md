@@ -75,38 +75,105 @@ Proven on AWS on 2026-11-02, all at commit `6ddddb0`:
   returned a token and an HMAC.
 
 4) What you need to run it
-- An AWS account and the AWS CLI signed in
-- Terraform 1.17.0 and Terragrunt 1.2.1
-- Apply `terraform/bootstrap` once (state bucket and GitHub OIDC roles)
-- Or use the script: `scripts/bootstrap.sh state-bucket`, then
-  `scripts/bootstrap.sh <testing|stage|production|all>`. It plans, asks
-  before it applies, and sets the role ARN variables on the env's GitHub
-  environments. `--dry-run` and `--help` show the rest.
+Required tools. The scripts check the versions in `scripts/lib.sh` and
+stop if one is too old.
+- AWS CLI v2, 2.32.0 or later. That's the first version with
+  `aws login`, which signs the CLI in with your console sign-in.
+  Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+  (`aws login`: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+- Terraform 1.17.0 or later. Runs the bootstrap and state bucket roots,
+  and Terragrunt calls it for the layers.
+  Install: https://developer.hashicorp.com/terraform/install
+- Terragrunt 1.2.1 or later. Runs the four layers.
+  Install: https://terragrunt.gruntwork.io/docs/getting-started/install/
+- GitHub CLI `gh`, 2.55.0 or later. The bootstrap script uses it to set
+  and read back the role ARN variables on the GitHub environments. Sign
+  in with `gh auth login`. Its default scopes (`repo`, `read:org`,
+  `gist`) are enough, since environment variables only need `repo`.
+  Install: https://cli.github.com/
+  (scopes: https://cli.github.com/manual/gh_auth_login and
+  https://docs.github.com/en/rest/actions/variables#create-an-environment-variable)
+- jq 1.6 or later. Reads plan and output JSON in the scripts.
+  Install: https://jqlang.org/download/
+- openssl 1.1.1 or later. Makes the pepper (section 8).
+  Install: https://openssl-library.org/source/ (most systems have it)
+- git. Install: https://git-scm.com/downloads
+- bash. Git Bash on Windows works. macOS and Linux have it.
+- A GitHub account with admin on the repo, to create the environments,
+  rulesets and variables.
+- An AWS account you can sign in to with admin rights, for the bootstrap.
+
+Set up from zero, from the repo root:
+1. Fill in the tfvars. Copy `terraform/state-bucket/terraform.tfvars.example`
+   and each `terraform/bootstrap/*.tfvars.example` to the same name
+   without `.example` (testing is `terraform.tfvars`) and replace every
+   `REPLACE-ME`. The script stops if one is left.
+2. `scripts/bootstrap.sh state-bucket`, once. The first run imports the
+   bucket if it already exists, or creates it, then moves its own state
+   into the bucket. The scripts never destroy the state bucket.
+3. Make the GitHub environments: `<env>-infra-plan`, `<env>-infra`,
+   `<env>-app` for each env you'll run. The script sets variables on
+   them but doesn't create them.
+4. `scripts/bootstrap.sh all`, or one env at a time with
+   `scripts/bootstrap.sh testing` (then `stage`, `production`). Testing
+   goes first because it makes the GitHub OIDC provider the others use.
+   One run does:
+   - preflight: tool versions, AWS session (runs `aws login` if there's
+     none), the right account, tfvars with no `REPLACE-ME`, `gh` signed in
+   - init and plan for each env, with a summary of what changes
+   - one typed confirmation for all the plans
+   - apply the saved plans, nothing re-planned
+   - set `AWS_PLAN_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN` and
+     `AWS_DEPLOY_ROLE_ARN` on the env's three GitHub environments, then
+     read each one back
+   `--dry-run` stops after the plan and shows which GitHub variables
+   would change. `--no-github` skips the GitHub step and prints the
+   `gh variable set` commands instead. Every run logs to `logs/`.
+5. Deploy. Merging to main deploys testing. Then run `promote.yml` to
+   stage, then to production (section 3).
+6. Tear down with `scripts/teardown.sh` (section 5).
+
+Manual equivalent, for reference: `terraform init -reconfigure` in
+`terraform/bootstrap` with the bucket, region and that env's state key
+(see `backend.tf`), `plan -var-file=<env>.tfvars`, apply, then copy the
+three role ARN outputs into the env's GitHub environments by hand.
+
+Also needed:
 - Repo variables: `TF_STATE_BUCKET`, `AWS_REGION`, `OWNER`,
   `BUDGET_EMAIL`, `ALB_INGRESS_CIDRS` (your IP as a /32)
-- GitHub environments: `testing-infra-plan`, `testing-infra`, `testing-app`
 - Confirm the SNS alarm email after the first deploy
 - Budget about $3 a day while it's running
 
+Access review:
+- Each env has three CI roles. Plan is read only, plus its own state
+  lock and saved plans. Terraform (apply) is PowerUser plus IAM for its
+  own env's roles, each with a permissions boundary. Deploy pushes its
+  own images, registers task definitions, runs the migration task and
+  rolls its own ECS services.
+- All three are denied the database logins, the SSN key and pepper,
+  other envs' state, saved plans, secrets and keys, and assuming any
+  other role. The vault roles' trust can't be changed from CI.
+- Check every few months, or after the account sits idle, that the
+  roles still only trust their own GitHub environments and nothing else
+  in the account trusts an outside account.
+- Changes to these roles only take effect after you run
+  `scripts/bootstrap.sh <env>` by hand. CI never applies bootstrap.
+
 For stage and production, on top of that:
-- Apply `terraform/bootstrap` once per env, each with its own state key
-  and tfvars (`stage.tfvars.example`, `production.tfvars.example`,
-  `backend.tf`). Both reuse the OIDC provider testing's bootstrap made.
-- GitHub environments `<env>-infra-plan`, `<env>-infra`, `<env>-app`.
-  Give each one the env variables `AWS_PLAN_ROLE_ARN`,
-  `AWS_TERRAFORM_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN` from that env's
-  bootstrap outputs. They override the repo-level testing values, and
-  the pipeline refuses a role that isn't for its env.
+- Their bootstrap tfvars must set `create_github_oidc_provider = false`.
+  They reuse the provider testing's bootstrap made.
+- The env variables on `<env>-infra-plan`, `<env>-infra` and `<env>-app`
+  override the repo-level testing values, and the pipeline refuses a
+  role that isn't for its env.
 - Stage environments: main branch only. Production environments: main
   and `v*` tags, with a required reviewer on all three.
 - A tag ruleset so only you can create `v*` tags.
-- Setup gotcha: `<env>.tfvars` copied from its `.example` still has
-  `REPLACE-ME-tfstate-bucket` and `REPLACE-ME-github-user`. If you don't
-  replace them, the env's plan role gets a state lock policy for the
-  wrong bucket, and the first promote fails at network-plan with
-  AccessDenied on `s3:PutObject` for the `.tflock` file. Fix: set the
-  real values, then plan and apply that env's bootstrap again. It only
-  updates policies in place.
+- Setup gotcha: a tfvars copied from its `.example` still has
+  `REPLACE-ME` values. The script stops on them now. Applied by hand,
+  the env's plan role gets a state lock policy for the wrong bucket and
+  the first promote fails at network-plan with AccessDenied on
+  `s3:PutObject` for the `.tflock` file. Fix: set the real values and
+  run the bootstrap again. It only updates policies in place.
 - After the first deploy of each env: set its pepper once (section 8)
   and confirm its alarm email. Tokenize answers 503 until the pepper is
   set.
@@ -144,7 +211,10 @@ through leaves a mess. From the repo root, run
 production first, then stage, then testing.
 
 The bootstrap (CI roles and the state bucket) stays until you remove it
-yourself. Stage can be promoted again by digest as long as testing's
+yourself. To retire an env for good, tear it down, then run
+`scripts/bootstrap.sh destroy <env>`. It refuses while the env still
+has tagged resources, and refuses testing while stage or production
+still has a bootstrap. No script destroys the state bucket. Stage can be promoted again by digest as long as testing's
 images exist. Tearing down testing deletes its images, so nothing can be
 promoted to stage until testing is deployed again. It deletes the
 backups too.
