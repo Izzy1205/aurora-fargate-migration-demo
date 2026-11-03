@@ -1,0 +1,27 @@
+# Keep LF in the repo and in every checkout, Windows included. Without this,
+# core.autocrlf=true on Git for Windows writes CRLF into the working tree,
+# which breaks bash scripts and makes terraform lock files look modified.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.tf text eol=lf
+*.tfvars text eol=lf
+*.hcl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.example text eol=lf
+Dockerfile text eol=lf
+
+# Nothing binary is tracked today. Listed so a future add isn't mangled.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary

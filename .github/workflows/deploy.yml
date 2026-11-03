@@ -22,16 +22,32 @@ name: deploy
 on:
   push:
     branches: [main]
-    # Docs, the local operator scripts and the hand-applied bootstrap and
-    # state bucket roots don't change what's deployed.
+    # Nothing here changes what gets deployed: docs, the local operator
+    # scripts and their tests, the hand-applied bootstrap and state bucket
+    # roots, workflows this one never calls, and repo config only PR checks
+    # or local tools read. Keep infra.yml, tg-plan.yml, tg-apply.yml,
+    # .github/actions/**, register-task-def.sh and run-migration.sh off
+    # this list, deploy runs them. A push that also touches any other file
+    # still deploys.
     paths-ignore:
       - README.md
       - docs/**
       - scripts/teardown.sh
       - scripts/bootstrap.sh
       - scripts/lib.sh
+      - scripts/lock-providers.sh
+      - scripts/tests/**
       - terraform/bootstrap/**
       - terraform/state-bucket/**
+      - .github/workflows/pr.yml
+      - .github/workflows/codeql.yml
+      - .github/workflows/stale-stack.yml
+      - .github/workflows/promote.yml
+      - .github/dependabot.yml
+      - .checkov.yaml
+      - .gitleaksignore
+      - .pre-commit-config.yaml
+      - .gitignore
   workflow_dispatch:
     inputs:
       env:

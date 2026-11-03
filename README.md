@@ -113,6 +113,15 @@ Git Bash on Windows:
 - If `~/bin` isn't on the PATH either, add it the same way:
   `echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc`
 - Then open a new Git Bash window, or run `source ~/.bashrc`.
+- Line endings: `.gitattributes` keeps every text file LF, even with
+  `core.autocrlf=true`. A clone made before it was added still has CRLF
+  files on disk. Once, after pulling it, from the repo root:
+  `git stash` (only if `git status` shows changes you want to keep), then
+  `git rm --cached -r -q . && git reset --hard`, then `git stash pop`
+  if you stashed. That rewrites every tracked file from the repo with LF.
+  `git reset --hard` throws away uncommitted changes to tracked files,
+  which is why the stash comes first. Untracked and ignored files, like
+  your tfvars, aren't touched. `git status` should be clean after.
 - A GitHub account with admin on the repo, to create the environments,
   rulesets and variables.
 - An AWS account you can sign in to with admin rights, for the bootstrap.
