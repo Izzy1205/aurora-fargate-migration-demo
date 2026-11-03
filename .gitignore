@@ -1,5 +1,7 @@
 # Terraform
 .terraform/
+# Per-env data dirs from scripts/bootstrap.sh (TF_DATA_DIR)
+.terraform-*/
 *.tfstate
 *.tfstate.*
 *.tfplan
@@ -26,6 +28,9 @@ terraform.rc
 terraform/layers/*/.terraform.lock.hcl
 terraform/modules/*/.terraform.lock.hcl
 
+# Run logs from scripts/bootstrap.sh
+logs/
+
 # Secrets and local env
 .env
 .env.*
@@ -42,6 +47,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+*.egg-info/
 .coverage
 htmlcov/
 

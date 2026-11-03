@@ -55,9 +55,9 @@ jobs:
           terraform fmt -check -recursive -diff
           terragrunt hcl fmt --check --diff
 
-      - name: validate (bootstrap and each layer, no backend)
+      - name: validate (bootstrap, state-bucket and each layer, no backend)
         run: |
-          for d in bootstrap layers/network layers/data layers/app layers/observability; do
+          for d in bootstrap state-bucket layers/network layers/data layers/app layers/observability; do
             echo "::group::$d"
             terraform -chdir="$d" init -backend=false
             terraform -chdir="$d" validate
@@ -90,6 +90,46 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-plan-${{ github.run_id }}
 
+      # The app layer reads the Aurora cluster and two security groups from
+      # AWS by name (see layers/app/main.tf). When testing is torn down they
+      # don't exist and the app plan fails. So check first and skip app if
+      # they're missing. Observability has no live lookups and plans against
+      # the app mocks. Any error other than not found fails the job.
+      - name: is testing deployed
+        id: stack
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          project=$(sed -n 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' root.hcl | head -n 1)
+          [ -n "$project" ] || { echo "::error::Could not read project from root.hcl"; exit 1; }
+          prefix="${project}-${MIGDEMO_ENV}"
+          missing=()
+
+          if out=$(aws rds describe-db-clusters --db-cluster-identifier "${prefix}-aurora" \
+              --query 'DBClusters[0].Status' --output text 2>&1); then
+            echo "Found ${prefix}-aurora ($out)"
+          elif grep -q DBClusterNotFoundFault <<<"$out"; then
+            missing+=("${prefix}-aurora")
+          else
+            echo "$out"
+            echo "::error::Could not check for ${prefix}-aurora"
+            exit 1
+          fi
+
+          found=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${prefix}-endpoints,${prefix}-db" \
+            --query 'SecurityGroups[].GroupName' --output json)
+          for sg in "${prefix}-endpoints" "${prefix}-db"; do
+            jq -e --arg n "$sg" 'any(.[]; . == $n)' <<<"$found" > /dev/null || missing+=("$sg")
+          done
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "deployed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Missing: ${missing[*]}"
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            echo "missing=${missing[*]}" >> "$GITHUB_OUTPUT"
+          fi
+
       # One unit at a time in dependency order, so plan.txt has a header per
       # unit. If an upstream unit has no state yet (or its outputs would
       # change), the units after it are planned against mock outputs. This plan is
@@ -101,10 +141,27 @@ jobs:
         env:
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
           TF_STATE_REGION: ${{ vars.AWS_REGION }}
+          DEPLOYED: ${{ steps.stack.outputs.deployed }}
+          MISSING: ${{ steps.stack.outputs.missing }}
         run: |
+          # plan-note.txt goes above the plan in the summary and the PR
+          # comment, so a long plan can't cut it off.
           : > "$GITHUB_WORKSPACE/plan.txt"
+          : > "$GITHUB_WORKSPACE/plan-note.txt"
+          if [ "$DEPLOYED" != true ]; then
+            {
+              echo "${MIGDEMO_ENV} is not deployed (missing: ${MISSING}), so the app plan was skipped."
+              echo "Observability was planned against mock app outputs."
+            } | tee "$GITHUB_WORKSPACE/plan-note.txt" >> "$GITHUB_WORKSPACE/plan.txt"
+            echo >> "$GITHUB_WORKSPACE/plan.txt"
+          fi
           for unit in network data app observability; do
             echo "## ${MIGDEMO_ENV}/${unit}" >> "$GITHUB_WORKSPACE/plan.txt"
+            if [ "$unit" = app ] && [ "$DEPLOYED" != true ]; then
+              echo "Skipped, ${MIGDEMO_ENV} is not deployed." >> "$GITHUB_WORKSPACE/plan.txt"
+              echo >> "$GITHUB_WORKSPACE/plan.txt"
+              continue
+            fi
             terragrunt run --working-dir "$unit" --non-interactive --tf-forward-stdout \
               -- plan -no-color \
               | tee -a "$GITHUB_WORKSPACE/plan.txt"
@@ -112,6 +169,7 @@ jobs:
           done
           {
             echo "### terragrunt plan (${MIGDEMO_ENV})"
+            cat "$GITHUB_WORKSPACE/plan-note.txt"
             echo '```'
             tail -c 60000 "$GITHUB_WORKSPACE/plan.txt"
             echo '```'
@@ -124,7 +182,8 @@ jobs:
           script: |
             const fs = require('fs');
             const plan = fs.readFileSync('plan.txt', 'utf8');
-            const body = '### terragrunt plan (testing)\n```\n' + plan.slice(-60000) + '\n```';
+            const note = fs.readFileSync('plan-note.txt', 'utf8');
+            const body = '### terragrunt plan (testing)\n' + note + '```\n' + plan.slice(-60000) + '\n```';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

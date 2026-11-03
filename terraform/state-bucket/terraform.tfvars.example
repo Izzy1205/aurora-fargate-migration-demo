@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+# Then run: ./scripts/bootstrap.sh state-bucket
+owner               = "REPLACE-ME-owner"
+expected_account_id = "REPLACE-ME"
+bucket_name         = "REPLACE-ME-tfstate-bucket"
+# aws_region        = "us-east-2"
+
+# Default encryption with a customer managed key. false keeps SSE-S3.
+# use_kms = true
