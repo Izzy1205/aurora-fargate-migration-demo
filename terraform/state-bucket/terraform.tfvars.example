@@ -9,3 +9,7 @@ bucket_name = "REPLACE-ME-tfstate-bucket"
 
 # Default encryption with a customer managed key. false keeps SSE-S3.
 # use_kms = true
+
+# Deny uploads that ask for SSE-S3. Leave off until every env has been
+# re-inited with kms_key_id (README, state encryption).
+# deny_non_kms_uploads = false

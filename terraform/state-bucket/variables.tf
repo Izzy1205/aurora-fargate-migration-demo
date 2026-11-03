@@ -118,6 +118,12 @@ variable "require_tls_1_2" {
   default     = true
 }
 
+variable "deny_non_kms_uploads" {
+  description = "Deny PutObject that asks for any encryption but aws:kms. Turn on only after every backend sets kms_key_id (see README)."
+  type        = bool
+  default     = false
+}
+
 variable "deny_ci_bucket_admin" {
   description = "Deny the GitHub CI roles changes to bucket settings and deletes of old object versions."
   type        = bool

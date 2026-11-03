@@ -20,6 +20,14 @@ locals {
 # S3 native locking puts a .tflock next to each one, so there is no DynamoDB
 # table. The bucket is never created or changed from here: it already exists,
 # and disable_bucket_update stops Terragrunt from touching its settings.
+#
+# kms_key_id makes the backend send SSE-KMS with the state bucket's key on
+# both the state and the .tflock. Without it the backend sends AES256 and
+# the bucket default key never applies. The alias is the one
+# terraform/state-bucket makes. An alias name resolves in the caller's
+# account, so no account ID is needed here. TF_STATE_KMS_KEY overrides it.
+#   https://developer.hashicorp.com/terraform/language/backend/s3#kms_key_id
+#   https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
 remote_state {
   backend = "s3"
 
@@ -33,6 +41,7 @@ remote_state {
     key          = "aurora-fargate-migration-demo/${local.unit_path}/terraform.tfstate"
     region       = get_env("TF_STATE_REGION", local.aws_region)
     encrypt      = true
+    kms_key_id   = get_env("TF_STATE_KMS_KEY", "alias/${local.project}-tfstate")
     use_lockfile = true
 
     disable_bucket_update = true

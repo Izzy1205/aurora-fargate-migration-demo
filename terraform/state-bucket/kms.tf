@@ -2,9 +2,11 @@
 # use_kms is true.
 #
 # Terraform's S3 backend sends its own SSE header (AES256) unless the
-# backend sets kms_key_id, so state files stay SSE-S3 until the backends are
-# changed. Objects written without a header, such as the saved plans from
-# tg-plan.yml, get this key.
+# backend sets kms_key_id. root.hcl and scripts/bootstrap.sh set it to this
+# key's alias, so state and lock files get this key. Objects written
+# without a header, such as the saved plans from tg-plan.yml, get it from
+# the bucket default. State written before that change stays SSE-S3 until
+# it's written again or scripts/reencrypt-state.sh copies it.
 
 resource "aws_kms_key" "state" {
   count = var.use_kms ? 1 : 0
@@ -49,7 +51,11 @@ data "aws_iam_policy_document" "kms" {
 
   # The plan role only has ReadOnlyAccess, which has no kms:Decrypt or
   # GenerateDataKey. Grant just those to the CI roles, only through S3 and
-  # only for this bucket.
+  # only for this bucket. That's all SSE-KMS needs: GenerateDataKey to
+  # write, Decrypt to read. kms:Encrypt is never called. See
+  # https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html
+  # Same account, so this grant works without an IAM allow. The roles'
+  # IAM policies deny the key outside S3 (NoStateKeyOutsideS3).
   statement {
     sid       = "CiRolesUseThroughS3"
     actions   = ["kms:Decrypt", "kms:GenerateDataKey"]

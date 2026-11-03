@@ -172,6 +172,19 @@ if [[ ! -f "$BOOT_TFVARS" && -f "$REPO_ROOT/terraform/bootstrap/terraform.tfvars
 fi
 SB_TFVARS="$REPO_ROOT/terraform/state-bucket/terraform.tfvars"
 
+# KMS key the backends encrypt state with: TF_STATE_KMS_KEY, or the alias
+# terraform/state-bucket makes. Empty when that root sets use_kms = false,
+# since there's no key then. Keep this in step with root.hcl.
+state_kms_key() {
+  if [[ -n "${TF_STATE_KMS_KEY:-}" ]]; then
+    printf '%s\n' "$TF_STATE_KMS_KEY"
+  elif [[ -f "$SB_TFVARS" && "$(hcl_raw use_kms "$SB_TFVARS")" == false ]]; then
+    printf '\n'
+  else
+    printf 'alias/%s-tfstate\n' "$(resolve_project)"
+  fi
+}
+
 # Region: AWS_REGION, then aws_region in the given tfvars, then the
 # testing bootstrap tfvars, then us-east-2.
 resolve_region() {

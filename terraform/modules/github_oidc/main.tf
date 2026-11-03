@@ -152,6 +152,30 @@ data "aws_iam_policy_document" "deny_other_state" {
   }
 }
 
+# The state bucket's key (terraform/state-bucket) is only for S3. Its key
+# policy lets the CI roles use it through S3 for that bucket, and S3 needs
+# nothing else. PowerUserAccess would let the apply role call it directly,
+# so deny any call that doesn't come through S3. The S3 denies above still
+# decide which state each role can reach.
+data "aws_iam_policy_document" "deny_state_key_outside_s3" {
+  statement {
+    sid       = "NoStateKeyOutsideS3"
+    effect    = "Deny"
+    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*"]
+    resources = ["*"]
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values   = ["alias/${local.project}-tfstate"]
+    }
+    condition {
+      test     = "StringNotLike"
+      variable = "kms:ViaService"
+      values   = ["s3.*.amazonaws.com"]
+    }
+  }
+}
+
 # Shared guardrail: the three envs share one account, and PowerUserAccess
 # reaches every secret and key in it. No CI role may touch another env's
 # secrets or SSN key. Own-env access is not changed here; the denies above

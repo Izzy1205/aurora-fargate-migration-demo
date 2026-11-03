@@ -36,6 +36,7 @@ on:
       - scripts/bootstrap.sh
       - scripts/lib.sh
       - scripts/lock-providers.sh
+      - scripts/reencrypt-state.sh
       - scripts/tests/**
       - terraform/bootstrap/**
       - terraform/state-bucket/**

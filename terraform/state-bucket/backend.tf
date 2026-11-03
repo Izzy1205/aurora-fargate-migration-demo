@@ -7,6 +7,7 @@
 #   -backend-config="bucket=<state bucket>"
 #   -backend-config="key=aurora-fargate-migration-demo/bootstrap-state-bucket.tfstate"
 #   -backend-config="region=<bucket region>"
+#   -backend-config="kms_key_id=alias/migdemo-tfstate" (skipped when use_kms = false)
 # The key starts with bootstrap so the CI roles' deny on bootstrap* state
 # keys covers it.
 terraform {

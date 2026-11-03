@@ -253,6 +253,15 @@ preflight_env() {
   bucket_exists "$bucket" || die "State bucket $bucket not found. Run scripts/bootstrap.sh state-bucket first."
 }
 
+# Sets KMS_ARGS to the -backend-config for the state key, or to nothing
+# when there's no key.
+kms_backend_args() {
+  local kms
+  kms=$(state_kms_key)
+  KMS_ARGS=()
+  [[ -z "$kms" ]] || KMS_ARGS=(-backend-config="kms_key_id=$kms")
+}
+
 plan_env() {
   local env="$1" bucket key region data plan
   bucket=$(tfvar "$env" state_bucket_name)
@@ -262,11 +271,13 @@ plan_env() {
   plan="bootstrap-$env.tfplan"
   CLEANUP+=("$BOOT_DIR/$plan")
 
+  kms_backend_args
   info "[$env] init (s3://$bucket/$key, $region)"
   tf_in "$BOOT_DIR" "$data" init -reconfigure -input=false \
     -backend-config="bucket=$bucket" \
     -backend-config="key=$key" \
-    -backend-config="region=$region"
+    -backend-config="region=$region" \
+    ${KMS_ARGS[@]+"${KMS_ARGS[@]}"}
 
   info "[$env] plan"
   local args=(plan -input=false -out="$plan" -var-file="$(env_tfvars "$env")")
@@ -422,11 +433,13 @@ cmd_destroy() {
   plan="bootstrap-$env-destroy.tfplan"
   CLEANUP+=("$BOOT_DIR/$plan")
 
+  kms_backend_args
   info "[$env] init (s3://$bucket/$key)"
   tf_in "$BOOT_DIR" "$data" init -reconfigure -input=false \
     -backend-config="bucket=$bucket" \
     -backend-config="key=$key" \
-    -backend-config="region=${TF_STATE_REGION:-$region}"
+    -backend-config="region=${TF_STATE_REGION:-$region}" \
+    ${KMS_ARGS[@]+"${KMS_ARGS[@]}"}
 
   local args=(plan -destroy -input=false -out="$plan" -var-file="$(env_tfvars "$env")")
   info "[$env] destroy plan"
@@ -510,6 +523,8 @@ cmd_state_bucket() {
     -backend-config="key=$SB_KEY"
     -backend-config="region=$region"
   )
+  kms_backend_args
+  backend_args+=(${KMS_ARGS[@]+"${KMS_ARGS[@]}"})
   local override="$SB_DIR/backend_override.tf"
   CLEANUP+=("$SB_DIR/$plan" "$override")
 
