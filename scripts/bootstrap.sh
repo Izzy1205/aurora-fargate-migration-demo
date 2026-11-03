@@ -9,6 +9,7 @@ set -euo pipefail
 
 BOOT_DIR="$REPO_ROOT/terraform/bootstrap"
 SB_DIR="$REPO_ROOT/terraform/state-bucket"
+LEGACY_TFVARS="$BOOT_DIR/terraform.tfvars"
 DEFAULT_KEY_PREFIX="aurora-fargate-migration-demo"
 SB_KEY="$DEFAULT_KEY_PREFIX/bootstrap-state-bucket.tfstate"
 ENVS=(testing stage production)
@@ -43,11 +44,13 @@ Before you run it:
     in terraform/state-bucket/terraform.tfvars. A pinned run stops on any
     other account.
   - Copy each *.tfvars.example to its tfvars and replace every REPLACE-ME.
-      testing:    terraform/bootstrap/terraform.tfvars
+      testing:    terraform/bootstrap/testing.tfvars
       stage:      terraform/bootstrap/stage.tfvars
       production: terraform/bootstrap/production.tfvars
     state-bucket writes terraform/state-bucket/terraform.tfvars for you if
     it's missing, from the testing tfvars and the signed in account.
+  - testing.tfvars used to be terraform/bootstrap/terraform.tfvars. If the
+    old name is still there, the script offers to rename it once.
   - gh auth login, for the GitHub step.
 
 Every run is logged to logs/<timestamp>-<command>.log (gitignored).
@@ -118,22 +121,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
-env_tfvars() {
-  case "$1" in
-    testing) echo terraform.tfvars ;;
-    *) echo "$1.tfvars" ;;
-  esac
-}
+# Every env passes its own file with -var-file. Nothing in terraform/bootstrap
+# may be named terraform.tfvars, since terraform loads that name on its own
+# for every env.
+env_tfvars() { echo "$1.tfvars"; }
 
 # Value of a bootstrap variable the way terraform resolves it here:
-# the env's tfvars, then terraform.tfvars (always auto-loaded), then $3.
+# the env's tfvars, then $3.
 tfvar() {
   local env="$1" name="$2" fallback="${3:-}" v=""
   v=$(hcl_value "$name" "$BOOT_DIR/$(env_tfvars "$env")")
-  if [[ -z "$v" && "$env" != testing && -f "$BOOT_DIR/terraform.tfvars" ]]; then
-    v=$(hcl_value "$name" "$BOOT_DIR/terraform.tfvars")
-  fi
   printf '%s\n' "${v:-$fallback}"
+}
+
+# Testing's tfvars used to be terraform.tfvars. Terraform loads that name on
+# its own, so it also loaded under stage and production and filled in
+# anything their files didn't set. Rename it once, after a confirm.
+migrate_legacy_tfvars() {
+  [[ -f "$LEGACY_TFVARS" ]] || return 0
+  local old="${LEGACY_TFVARS#"$REPO_ROOT"/}" new="terraform/bootstrap/testing.tfvars"
+  if [[ -f "$REPO_ROOT/$new" ]]; then
+    die "Both $old and $new exist. Terraform would load $old for every env. Move anything you still need into $new, then delete $old."
+  fi
+  warn "$old is testing's old tfvars name. Terraform loads it for every env, so it's $new now."
+  info "Or do it by hand: mv $old $new"
+  confirm yes "rename it to $new"
+  mv "$LEGACY_TFVARS" "$REPO_ROOT/$new"
+  BOOT_TFVARS="$REPO_ROOT/$new"
+  info "Renamed $old to $new"
+}
+
+# Stage and production used to pick up any value testing's file set and
+# theirs didn't. Stop if one of those would now fall back to the default,
+# so no env's values change without you seeing it.
+check_inherited() {
+  local env="$1" f="$BOOT_DIR/$1.tfvars" t="$BOOT_DIR/testing.tfvars" missing
+  [[ "$env" != testing && -f "$t" ]] || return 0
+  missing=$(comm -23 <(tfvars_names "$t" | sort -u) <(tfvars_names "$f" | sort -u))
+  [[ -z "$missing" ]] || die "${t#"$REPO_ROOT"/} sets these and ${f#"$REPO_ROOT"/} doesn't:
+$(printf '%s\n' "$missing" | sed 's/^/  /')
+$env used to get testing's value for them. Add each one to ${f#"$REPO_ROOT"/}, with testing's value to keep the plan the same."
 }
 
 env_state_key() {
@@ -210,8 +237,7 @@ preflight_env() {
   local env="$1" f got bucket oidc
   f="$BOOT_DIR/$(env_tfvars "$env")"
   check_tfvars_file "$f"
-  # terraform.tfvars loads for every env, so its placeholders count too.
-  [[ "$env" == testing ]] || check_tfvars_file "$BOOT_DIR/terraform.tfvars"
+  check_inherited "$env"
 
   got=$(hcl_value environment "$f")
   [[ "${got:-testing}" == "$env" ]] ||
@@ -243,8 +269,7 @@ plan_env() {
     -backend-config="region=$region"
 
   info "[$env] plan"
-  local args=(plan -input=false -out="$plan")
-  [[ "$env" == testing ]] || args+=(-var-file="$(env_tfvars "$env")")
+  local args=(plan -input=false -out="$plan" -var-file="$(env_tfvars "$env")")
   tf_in "$BOOT_DIR" "$data" "${args[@]}"
 
   info "[$env] summary"
@@ -336,6 +361,7 @@ run_envs() {
 
 cmd_bootstrap() {
   preflight_common
+  migrate_legacy_tfvars
   case "$TARGET" in
     all)
       if oidc_provider_exists; then
@@ -371,6 +397,7 @@ cmd_destroy() {
   local env="$DESTROY_ENV" project region left other data plan bucket key
   NO_GITHUB=1
   preflight_common
+  migrate_legacy_tfvars
   preflight_env "$env"
   project=$(tfvar "$env" project "$(resolve_project)")
   region=$(tfvar "$env" aws_region us-east-2)
@@ -401,8 +428,7 @@ cmd_destroy() {
     -backend-config="key=$key" \
     -backend-config="region=${TF_STATE_REGION:-$region}"
 
-  local args=(plan -destroy -input=false -out="$plan")
-  [[ "$env" == testing ]] || args+=(-var-file="$(env_tfvars "$env")")
+  local args=(plan -destroy -input=false -out="$plan" -var-file="$(env_tfvars "$env")")
   info "[$env] destroy plan"
   tf_in "$BOOT_DIR" "$data" "${args[@]}"
   summarize_plan "$BOOT_DIR" "$data" "$plan"
@@ -436,7 +462,7 @@ suggest_bucket() {
 write_state_bucket_tfvars() {
   local f="$1" owner region bucket
   owner=$(resolve_owner "")
-  [[ -n "$owner" ]] || die "No owner to put in ${f#"$REPO_ROOT"/}. Fill in owner in terraform/bootstrap/terraform.tfvars or set MIGDEMO_OWNER."
+  [[ -n "$owner" ]] || die "No owner to put in ${f#"$REPO_ROOT"/}. Fill in owner in terraform/bootstrap/testing.tfvars or set MIGDEMO_OWNER."
   region=$(resolve_region)
   bucket=$(suggest_bucket "$owner")
 
@@ -474,7 +500,7 @@ cmd_state_bucket() {
   local var_args=()
   if [[ -z "$(hcl_value owner "$f")" ]]; then
     owner=$(resolve_owner "")
-    [[ -n "$owner" ]] || die "Set owner in ${f#"$REPO_ROOT"/} or terraform/bootstrap/terraform.tfvars."
+    [[ -n "$owner" ]] || die "Set owner in ${f#"$REPO_ROOT"/} or terraform/bootstrap/testing.tfvars."
     var_args+=(-var="owner=$owner")
   fi
   [[ -n "$(hcl_value aws_region "$f")" ]] || var_args+=(-var="aws_region=$region")

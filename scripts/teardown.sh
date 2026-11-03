@@ -39,8 +39,8 @@ One run does:
     Exits non-zero if anything is.
 
 Values the units need, read from the environment first:
-  TF_STATE_BUCKET            else state_bucket_name in terraform/bootstrap/terraform.tfvars
-  MIGDEMO_OWNER              else owner in terraform/bootstrap/terraform.tfvars
+  TF_STATE_BUCKET            else state_bucket_name in terraform/bootstrap/testing.tfvars
+  MIGDEMO_OWNER              else owner in terraform/bootstrap/testing.tfvars
   MIGDEMO_BUDGET_EMAIL       else the BUDGET_EMAIL repo variable (gh)
   MIGDEMO_ALB_INGRESS_CIDRS  else the ALB_INGRESS_CIDRS repo variable (gh)
   MIGDEMO_ACCOUNT_ID         optional account pin, same as bootstrap.sh
@@ -163,11 +163,11 @@ resolve_inputs() {
 
   local missing=0
   [[ -n "${TF_STATE_BUCKET:-}" && "$TF_STATE_BUCKET" != *REPLACE-ME* ]] || {
-    warn "No state bucket. Set TF_STATE_BUCKET or state_bucket_name in terraform/bootstrap/terraform.tfvars."
+    warn "No state bucket. Set TF_STATE_BUCKET or state_bucket_name in terraform/bootstrap/testing.tfvars."
     missing=1
   }
   [[ -n "$MIGDEMO_OWNER" ]] || {
-    warn "No owner. Set MIGDEMO_OWNER or owner in terraform/bootstrap/terraform.tfvars."
+    warn "No owner. Set MIGDEMO_OWNER or owner in terraform/bootstrap/testing.tfvars."
     missing=1
   }
   [[ -n "${MIGDEMO_BUDGET_EMAIL:-}" ]] || {

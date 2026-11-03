@@ -119,8 +119,15 @@ Git Bash on Windows:
 
 Set up from zero, from the repo root:
 1. Fill in the tfvars. Copy each `terraform/bootstrap/*.tfvars.example`
-   to the same name without `.example` (testing is `terraform.tfvars`)
-   and replace every `REPLACE-ME`. The script stops if one is left.
+   to the same name without `.example` (`testing.tfvars`, `stage.tfvars`,
+   `production.tfvars`) and replace every `REPLACE-ME`. The script stops
+   if one is left. Each env gets only its own file, with `-var-file`.
+   Stage and production have to set everything testing's file sets, or
+   the script stops and lists what's missing.
+   Testing's file used to be `terraform.tfvars`. Terraform loads that
+   name on its own, so it leaked into stage and production. If the old
+   name is still there the script offers to rename it to
+   `testing.tfvars`, once, after you type `yes`.
 2. `scripts/bootstrap.sh state-bucket`, once. If
    `terraform/state-bucket/terraform.tfvars` is missing it writes one
    from the testing tfvars and the account you're signed in to, shows
@@ -157,8 +164,18 @@ Set up from zero, from the repo root:
 
 Manual equivalent, for reference: `terraform init -reconfigure` in
 `terraform/bootstrap` with the bucket, region and that env's state key
-(see `backend.tf`), `plan -var-file=<env>.tfvars`, apply, then copy the
-three role ARN outputs into the env's GitHub environments by hand.
+(see `backend.tf`), `plan -var-file=<env>.tfvars` (testing too), apply,
+then copy the three role ARN outputs into the env's GitHub environments
+by hand.
+
+Provider lock files: every `.terraform.lock.hcl` has hashes for
+linux_amd64, windows_amd64, darwin_arm64 and darwin_amd64, so `init` on
+Windows, a Mac or CI doesn't rewrite it. After a provider version
+changes, run `scripts/lock-providers.sh` from the repo root and commit
+the lock files. It runs `terraform providers lock` with those four
+platforms for bootstrap, state-bucket and every unit, keeps the locked
+versions, and only talks to the Terraform registry, no AWS. Check
+`git diff` after: only hashes should change.
 
 Also needed:
 - Repo variables: `TF_STATE_BUCKET`, `AWS_REGION`, `OWNER`,
@@ -253,9 +270,12 @@ up. One run does:
 The summary counts come from `terraform show -json` on each saved plan,
 with the plan text as a backup. `bash scripts/tests/teardown-plan-summary.sh`
 checks that part with fake terragrunt output, no AWS needed.
+`bash scripts/tests/bootstrap-tfvars.sh` checks the bootstrap tfvars
+handling the same way. The PR workflow runs both, plus shellcheck.
 
 The units need the same values the pipeline passes in. It reads
-`TF_STATE_BUCKET` and `MIGDEMO_OWNER` from the testing bootstrap tfvars,
+`TF_STATE_BUCKET` and `MIGDEMO_OWNER` from
+`terraform/bootstrap/testing.tfvars`,
 and `MIGDEMO_BUDGET_EMAIL` and `MIGDEMO_ALB_INGRESS_CIDRS` from the
 `BUDGET_EMAIL` and `ALB_INGRESS_CIDRS` repo variables with `gh`. Set
 any of them in the environment to override.

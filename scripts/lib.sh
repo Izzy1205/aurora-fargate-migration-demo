@@ -36,6 +36,12 @@ hcl_value() {
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n 1
 }
 
+# Names a tfvars file sets at the top level, one per line. Comments and
+# list items don't count.
+tfvars_names() {
+  sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_-]*\)[[:space:]]*=.*/\1/p' "$1"
+}
+
 # First unquoted value (bool or number) of `name = value`.
 hcl_raw() {
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([A-Za-z0-9_.-]*\).*/\1/p" "$2" | head -n 1
@@ -158,11 +164,16 @@ resolve_project() {
   printf '%s\n' "$p"
 }
 
-BOOT_TFVARS="$REPO_ROOT/terraform/bootstrap/terraform.tfvars"
+# Testing's bootstrap tfvars. Clones from before the rename still have it
+# as terraform.tfvars, which is fine to read here. bootstrap.sh renames it.
+BOOT_TFVARS="$REPO_ROOT/terraform/bootstrap/testing.tfvars"
+if [[ ! -f "$BOOT_TFVARS" && -f "$REPO_ROOT/terraform/bootstrap/terraform.tfvars" ]]; then
+  BOOT_TFVARS="$REPO_ROOT/terraform/bootstrap/terraform.tfvars"
+fi
 SB_TFVARS="$REPO_ROOT/terraform/state-bucket/terraform.tfvars"
 
 # Region: AWS_REGION, then aws_region in the given tfvars, then the
-# bootstrap's terraform.tfvars, then us-east-2.
+# testing bootstrap tfvars, then us-east-2.
 resolve_region() {
   local r="${AWS_REGION:-}"
   if [[ -z "$r" && -n "${1:-}" && -f "$1" ]]; then
@@ -175,7 +186,7 @@ resolve_region() {
 }
 
 # Owner: MIGDEMO_OWNER, then owner in the given tfvars, then the
-# bootstrap's terraform.tfvars. Empty if none has a real value.
+# testing bootstrap tfvars. Empty if none has a real value.
 resolve_owner() {
   local o="${MIGDEMO_OWNER:-}"
   if [[ -z "$o" && -n "${1:-}" && -f "$1" ]]; then
