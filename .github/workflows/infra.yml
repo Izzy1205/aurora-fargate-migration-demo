@@ -43,6 +43,8 @@ on:
         value: ${{ jobs.outputs.outputs.migration_log_group }}
       app_url:
         value: ${{ jobs.outputs.outputs.app_url }}
+      app_cert_self_signed:
+        value: ${{ jobs.outputs.outputs.app_cert_self_signed }}
       desired_count:
         value: ${{ jobs.outputs.outputs.desired_count }}
       vault_service:
@@ -223,6 +225,7 @@ jobs:
       migration_repo: ${{ steps.out.outputs.migration_repo }}
       migration_log_group: ${{ steps.out.outputs.migration_log_group }}
       app_url: ${{ steps.out.outputs.app_url }}
+      app_cert_self_signed: ${{ steps.out.outputs.app_cert_self_signed }}
       desired_count: ${{ steps.out.outputs.desired_count }}
       vault_service: ${{ steps.out.outputs.vault_service }}
       vault_family: ${{ steps.out.outputs.vault_family }}
@@ -271,6 +274,8 @@ jobs:
             echo "migration_repo=$(o migration_ecr_repository)"
             echo "migration_log_group=$(o migration_log_group)"
             echo "app_url=$(o app_url)"
+            # tostring because jq -e treats a plain false as a failure.
+            echo "app_cert_self_signed=$(jq -er '.certificate_self_signed.value | tostring' "$RUNNER_TEMP/outputs.json")"
             echo "desired_count=$(o app_desired_count)"
             echo "vault_service=$(o ssn_vault_service_name)"
             echo "vault_family=$(o ssn_vault_task_family)"

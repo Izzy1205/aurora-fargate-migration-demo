@@ -13,6 +13,16 @@ locals {
   dlq   = ["QueueName", var.payment_dlq_name]
   waf   = ["WebACL", var.waf_web_acl_name, "Region", local.region, "Rule", "ALL"]
 
+  # Per-rule WAF metrics. The Rule dimension is each rule's metric_name in
+  # modules/waf/main.tf. A rule that never matched has no data, which is fine.
+  waf_rule = { for r in [
+    "geo-allow-list",
+    "AWSManagedRulesAnonymousIpList",
+    "rate-limit-per-ip",
+    "rate-limit-ssn-reveal",
+    "rate-limit-ssn-tickets",
+  ] : r => ["WebACL", var.waf_web_acl_name, "Region", local.region, "Rule", "${var.name_prefix}-${r}"] }
+
   widgets = [
     {
       title = "ALB 5xx (sum per 5 min)"
@@ -73,6 +83,16 @@ locals {
         concat(["AWS/WAFV2", "BlockedRequests"], local.waf),
         concat(["AWS/WAFV2", "CountedRequests"], local.waf),
       ]
+    },
+    {
+      # Which rule is doing the blocking. Counted shows the same rules while
+      # count_only is on.
+      title = "WAF blocked and counted by rule (sum per 5 min)"
+      stat  = "Sum"
+      metrics = concat(
+        [for r, d in local.waf_rule : concat(["AWS/WAFV2", "BlockedRequests"], d)],
+        [for r, d in local.waf_rule : concat(["AWS/WAFV2", "CountedRequests"], d)],
+      )
     },
     {
       title = "Payment queue depth (main and DLQ)"

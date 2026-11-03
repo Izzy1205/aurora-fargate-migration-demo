@@ -5,6 +5,9 @@ data "aws_ec2_managed_prefix_list" "s3" {
   name = "com.amazonaws.${data.aws_region.current.region}.s3"
 }
 
+# The ALB group's description still says HTTP. Changing a security group's
+# description replaces the group, and the pipeline blocks replaces, so it
+# stays as is. The rules below are what count: 443, and 80 for the redirect.
 resource "aws_security_group" "alb" {
   name        = "${var.name_prefix}-alb"
   description = "ALB: HTTP in from allowed CIDRs, out to app tasks only"
@@ -35,7 +38,8 @@ resource "aws_security_group" "endpoints" {
   vpc_id      = aws_vpc.this.id
 }
 
-# ALB
+# ALB. Port 80 only answers with a redirect to 443 (modules/ecs/alb.tf), so
+# it stays open to the same CIDRs and a plain http:// link still works.
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   for_each = toset(var.alb_ingress_cidrs)
 
@@ -44,6 +48,17 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   cidr_ipv4         = each.value
   from_port         = 80
   to_port           = 80
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS from allowed CIDR"
+  cidr_ipv4         = each.value
+  from_port         = 443
+  to_port           = 443
   ip_protocol       = "tcp"
 }
 

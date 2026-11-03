@@ -10,10 +10,17 @@ to patch, upgrade, and prove secure.
 
 2) What this repo does
 - Runs the app in containers on ECS Fargate behind a load balancer
-- Puts a WAF in front to block common attacks and rate limit by IP
-- Serves plain HTTP, locked to one IP. HTTPS needs a domain for an ACM
-  cert, and the demo doesn't have one. In prod it's a 443 listener with
-  80 redirecting to it.
+- Puts a WAF in front to block common attacks, anonymizing proxies and
+  requests from outside the US, and to rate limit by IP. Every
+  environment blocks. `waf_count_only = true` in env.hcl switches an
+  environment to count only, for trying new rules; `waf_geo_allow_countries`
+  sets the allowed countries (`[]` turns that rule off).
+- Serves HTTPS on 443, locked to one IP, with TLS 1.3 and 1.2 only
+  (`ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09`). Port 80 only answers
+  with a 301 to HTTPS. With no domain, the cert is self-signed and
+  imported into ACM for free, so browsers warn and curl needs `-k`. Set
+  `domain_name` and `route53_zone_id` in env.hcl to get a public ACM cert
+  instead (see section 4).
 - Stores data in Aurora PostgreSQL. The app and Flyway each log in as
   their own role with a password in Secrets Manager. The app can only
   read and write rows; Flyway owns the schema. The master password stays
@@ -42,7 +49,10 @@ Everything is Terraform, organized with Terragrunt into four layers:
 network, data, app, and observability. Every pull request runs a plan
 plus security scans. Merging to main deploys to testing on its own. If
 a plan would delete or replace something, the pipeline stops and a
-person has to handle it.
+person has to handle it. The one exception is the self-signed TLS key
+and cert, which only exist in Terraform state: renewing them (yearly,
+30 days early) replaces them, and the ACM cert takes the new PEM in
+place.
 
 Only testing builds images. Stage and production get the same image,
 by digest, through `promote.yml`: testing to stage, then stage to
@@ -54,6 +64,15 @@ started by hand. Production is started by hand or by pushing a `vX.Y.Z`
 tag, never by a merge, and every production plan, apply and release
 waits for a reviewer. Each env has its own CI roles, and each role only
 trusts its own GitHub environment.
+
+Proven on AWS on 2026-11-02, all at commit `6ddddb0`:
+- Testing deploy, run 41500661903: succeeded.
+- Stage promote, run 41510489704: succeeded.
+- Production promote, run 41518904821: succeeded, with every production
+  job waiting for a reviewer.
+- Smoke tests passed in stage and production: `/health` reported
+  `6ddddb0`, and `/ssn/tokenize` with `X-Caller: claimant-signup`
+  returned a token and an HMAC.
 
 4) What you need to run it
 - An AWS account and the AWS CLI signed in
@@ -77,8 +96,37 @@ For stage and production, on top of that:
 - Stage environments: main branch only. Production environments: main
   and `v*` tags, with a required reviewer on all three.
 - A tag ruleset so only you can create `v*` tags.
-- After the first deploy of each env: set its pepper (section 8) and
-  confirm its alarm email.
+- Setup gotcha: `<env>.tfvars` copied from its `.example` still has
+  `REPLACE-ME-tfstate-bucket` and `REPLACE-ME-github-user`. If you don't
+  replace them, the env's plan role gets a state lock policy for the
+  wrong bucket, and the first promote fails at network-plan with
+  AccessDenied on `s3:PutObject` for the `.tflock` file. Fix: set the
+  real values, then plan and apply that env's bootstrap again. It only
+  updates policies in place.
+- After the first deploy of each env: set its pepper once (section 8)
+  and confirm its alarm email. Tokenize answers 503 until the pepper is
+  set.
+- Smoke test: `/health`, then `/ssn/tokenize` with a fake 9xx SSN.
+  Stage and production need `X-Caller: claimant-signup`. `demo` only
+  works in testing. Use the `app_url` output (https). With the
+  self-signed cert, add `-k`:
+  `curl -k "$ALB/health"`. To check the cert instead of skipping the
+  check, save the `self_signed_cert_pem` output to a file and use
+  `curl --cacert alb.pem "$ALB/health"`. `http://` still works and
+  answers 301 to the https URL.
+- A real cert: put a public Route 53 hosted zone for your domain in the
+  account, then set `domain_name` (for example `app.example.com`) and
+  `route53_zone_id` in that env's env.hcl. The plan requests an ACM
+  cert, validates it with DNS records in the zone, adds an alias record
+  to the ALB and points the listener at it. ACM renews it on its own.
+  Drop `-k` after that. The same plan deletes the self-signed cert from
+  ACM, and the pipeline's delete check stops any plan with a delete, so
+  that one switch is an apply you run by hand.
+- The WAF answers 403 to requests from outside `waf_geo_allow_countries`
+  (US by default) and to Tor exits, open proxies and VPN ranges. A smoke
+  test from a VPN or from abroad gets a 403 from the WAF, not the app.
+  Cloud provider IP ranges (`HostingProviderIPList`) are only counted,
+  not blocked.
 - Stage costs about $8 to $9 a day while it's up (multi-AZ endpoints, an
   Aurora floor that doesn't pause, ALB, WAF, four tasks). Bring it up to
   prove a release, then tear it down. Every budget is account-wide, so
@@ -87,10 +135,15 @@ For stage and production, on top of that:
 5) How it tears down
 Teardown is manual on purpose so the pipeline can never delete things
 on its own. Sign in to AWS first, since an expired session partway
-through leaves a mess. Then run `./scripts/teardown.sh <env>`,
-check each plan, and type yes. Tearing down testing also deletes its
-images, so nothing can be promoted to stage until testing is deployed
-again. It deletes the backups too. The bootstrap stays until you remove it yourself.
+through leaves a mess. From the repo root, run
+`./scripts/teardown.sh <env>`, check each plan, and type yes. Go
+production first, then stage, then testing.
+
+The bootstrap (CI roles and the state bucket) stays until you remove it
+yourself. Stage can be promoted again by digest as long as testing's
+images exist. Tearing down testing deletes its images, so nothing can be
+promoted to stage until testing is deployed again. It deletes the
+backups too.
 
 6) How I built this
 I designed it, ran it, and debugged it myself, and I used an AI
@@ -196,8 +249,8 @@ Endpoints:
   `X-Caller`. Both are headers the client sets, so anyone who knows an
   allowed caller name can send it. The caller check keeps casual callers
   out and names the caller in the audit row, but it is not proof of who
-  called. That is the same gap as the verified identity in "Not done
-  yet".
+  called. That is the same gap as the verified identity in the roadmap
+  (section 9).
 - Re-auth is a placeholder: `X-Reauth-Actor` must match the actor and
   `X-Reauth-At` (Unix seconds) must be under 5 minutes old. Anyone who can
   set `X-Actor` can set these too, so it only shows where the check goes.
@@ -384,9 +437,10 @@ Turning it on in an environment:
    `aws secretsmanager put-secret-value --secret-id <name_prefix>/ssn/hmac-pepper --secret-string "$(openssl rand -hex 32)"`
 4. The next `/ssn` request picks it up within 30 seconds. Check it with a
    fake SSN in the 9xx range (never a real one):
-   `curl -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'`
-   `demo` only works in testing. In stage or production use an allowed
-   caller name instead.
+   `curl -k -X POST "$ALB/ssn/tokenize" -H "Content-Type: application/json" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'`
+   `demo` only works in testing. In stage or production send
+   `X-Caller: claimant-signup` instead. Do this once per env. `$ALB`
+   is the https `app_url`; `-k` is for the self-signed cert.
 
 If it answers 503, the vault log (`/ecs/<name_prefix>/ssn-vault`) names
 the step that failed and nothing else, for example
@@ -429,7 +483,9 @@ In Git Bash, fake SSN only, all within 5 minutes for the refresh step
 (the re-auth headers must be under 5 minutes old):
 
 ```bash
-ALB=http://<your-alb-dns-name>
+# The self-signed cert needs -k. Drop it once domain_name is set.
+ALB=https://<your-alb-dns-name>
+curl() { command curl -k "$@"; }
 J="Content-Type: application/json"
 TOK=$(curl -s -X POST "$ALB/ssn/tokenize" -H "$J" -H "X-Caller: demo" -d '{"ssn":"900-12-3456"}'); echo "$TOK"
 SEED=$(curl -s -X POST "$ALB/demo/seed-claim" -H "$J" -H "X-Actor: izzy" -d "$TOK"); echo "$SEED"
@@ -478,24 +534,7 @@ Threat model, short version:
 Code: `app/src/demo_app/ssn/` (`config.py` is the startup lookup). Key,
 pepper secret and IAM: `terraform/modules/ssn_vault`.
 
-Not done yet:
-- Actor from the verified identity (ALB OIDC or Cognito) and a "may
-  reveal" role check, instead of a header. The same for the tokenize
-  caller: prove the calling service (mutual TLS, a signed service token
-  or SigV4) instead of trusting `X-Caller`.
-- Two-person approval for bulk reveal.
-- A shared store for the per-actor limit (DynamoDB or ElastiCache), so it
-  is exact across vault tasks and survives a restart.
-- A closed claim on ticket issue counts as `no_open_claim`, not
-  `claim_closed`. Telling them apart needs a store change.
-- A key rotation re-encrypt job (rows record their key ARN).
-- Real re-auth for refresh (identity provider step-up), replacing the
-  header placeholder.
-- Store a hash of the ticket instead of the value, and maybe require the
-  same actor at reveal as at issue.
-- A job that deletes tickets that are long dead.
-- Claimant sign-up and the wage loader calling tokenize, sending
-  `X-Caller`.
+Known trade-offs:
 - The account keeps administration of the SSN key as a break glass. An
   account admin with `kms:PutKeyPolicy` can widen the key policy, so admin
   roles in this account are part of the trust boundary. The CI apply role
@@ -505,3 +544,34 @@ Not done yet:
 - The CI denies match the key by its alias, because bootstrap can't know
   the key ARN. Removing the alias lifts those denies. The key policy still
   gives CI no Encrypt or Decrypt, so both would have to change.
+
+9) Roadmap
+Future installments. None of these are built yet.
+
+SSN service:
+- Verified identity (ALB OIDC or Cognito) for the actor, with a "may
+  reveal" role check, replacing the `X-Actor` header.
+- Real re-auth for refresh (identity provider step-up), replacing the
+  `X-Reauth-Actor` and `X-Reauth-At` placeholder.
+- Mutual TLS between services. Prove the calling service (mutual TLS, a
+  signed service token or SigV4) instead of trusting `X-Caller`, and
+  encrypt app to vault traffic, which is plain HTTP on 8080 today.
+- Hashed tickets: store a hash of the ticket instead of the value, and
+  maybe require the same actor at reveal as at issue.
+- A shared rate limit store (DynamoDB or ElastiCache), so the per-actor
+  limit is exact across vault tasks and survives a restart.
+- A ticket cleanup job that deletes tickets that are long dead.
+- A key rotation re-encrypt job (rows record their key ARN).
+- Two-person approval for bulk reveal.
+- Tell `claim_closed` apart from `no_open_claim` on ticket issue. That
+  needs a store change.
+- Claimant sign-up and the wage loader calling tokenize, sending
+  `X-Caller`.
+
+Platform:
+- Pin first-party GitHub actions (`actions/checkout`, `actions/setup-python`
+  and the rest) to commit SHAs. Most use version tags today.
+- Extend `stale-stack.yml` to stage. It only checks testing today.
+- Scan images again at promotion. Today promotion copies the digest
+  Trivy scanned in testing and doesn't scan again.
+- A separate AWS account per env. All three share one account today.

@@ -1,3 +1,7 @@
 # False positive: a public SHA-256 checksum for the opentelemetry-api jar from Maven Central,
 # flagged by generic-api-key because the variable name contains "API". Not a secret.
 174086b90987753071689171d7ea6f38169032c5:db/Dockerfile:generic-api-key:58
+
+# False positive: the ACM key_algorithm name EC_prime256v1 in tls.tf, flagged by
+# generic-api-key because the argument name contains "key". Not a secret.
+6b773d95cdd21af5e60534d8ae0a2163ad9d1f09:terraform/modules/ecs/tls.tf:generic-api-key:85

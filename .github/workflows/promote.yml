@@ -305,6 +305,7 @@ jobs:
           app-family: ${{ needs.infra.outputs.app_family }}
           app-desired-count: ${{ needs.infra.outputs.desired_count }}
           app-url: ${{ needs.infra.outputs.app_url }}
+          app-cert-self-signed: ${{ needs.infra.outputs.app_cert_self_signed }}
           migration-family: ${{ needs.infra.outputs.migration_family }}
           db-logins-family: ${{ needs.infra.outputs.db_logins_family }}
           subnets: ${{ needs.infra.outputs.subnets }}

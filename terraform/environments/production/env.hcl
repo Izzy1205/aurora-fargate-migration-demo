@@ -24,9 +24,20 @@ locals {
   ssn_vault_desired_count = 2 # one per AZ
   budget_limit_usd        = 50
 
-  # Count-only for first rollout. Higher limit for users behind shared NAT.
+  # Blocking, same as testing. waf_count_only = true counts instead, for a
+  # first rollout of new rules; read the WAF logs, then set it back.
+  # Higher rate limit for users behind shared NAT.
   waf_rate_limit = 2000
-  waf_count_only = true
+  waf_count_only = false
+
+  # The WAF answers 403 to any country not listed. [] turns the rule off.
+  waf_geo_allow_countries = ["US"]
+
+  # HTTPS cert. Null for both means a self-signed cert (curl -k). For a real
+  # one, set a name in a public Route 53 zone you own, for example
+  # domain_name = "production.example.com" and route53_zone_id = "Z0123456789ABC".
+  domain_name     = null
+  route53_zone_id = null
 
   # max 8 ACU allows well over 1,000 connections.
   alarm_thresholds = {

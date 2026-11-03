@@ -64,8 +64,13 @@ inputs = {
   ssn_vault_desired_count = local.env.ssn_vault_desired_count
   budget_limit_usd        = local.env.budget_limit_usd
 
-  waf_rate_limit = local.env.waf_rate_limit
-  waf_count_only = local.env.waf_count_only
+  waf_rate_limit          = local.env.waf_rate_limit
+  waf_count_only          = local.env.waf_count_only
+  waf_geo_allow_countries = local.env.waf_geo_allow_countries
+
+  # Null for both means a self-signed cert on the HTTPS listener.
+  domain_name     = local.env.domain_name
+  route53_zone_id = local.env.route53_zone_id
 
   budget_email = get_env("MIGDEMO_BUDGET_EMAIL")
 }

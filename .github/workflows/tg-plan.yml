@@ -129,6 +129,11 @@ jobs:
       # A reviewer can miss one destroy line in a long plan, so any delete or
       # replace stops here, in every environment. Real teardowns are done by
       # hand with scripts/teardown.sh, not through this pipeline.
+      #
+      # One exception: hashicorp/tls resources (the self-signed ALB key and
+      # cert) only exist in state. Renewing the cert replaces them, and the
+      # ACM cert that is real takes the new PEM in place, same ARN. A real
+      # ACM delete or replace still stops here.
       - name: block deletes and replaces
         if: steps.plan.outputs.has_changes == 'true'
         run: |
@@ -136,6 +141,7 @@ jobs:
             -- show -json "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/plan.json"
           deletes=$(jq -r '.resource_changes[]
             | select(.change.actions | index("delete"))
+            | select(.provider_name != "registry.terraform.io/hashicorp/tls")
             | .address' "$RUNNER_TEMP/plan.json")
           if [ -n "$deletes" ]; then
             echo "This plan deletes or replaces resources. Stopping."

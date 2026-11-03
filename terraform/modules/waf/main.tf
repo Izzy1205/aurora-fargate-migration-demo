@@ -1,6 +1,6 @@
-# Regional WAF in front of the ALB. Default allow, then AWS managed rule
-# groups and per-IP rate limits (tight ones on /ssn/reveal and
-# /ssn/tickets) decide what gets blocked.
+# Regional WAF in front of the ALB. Default allow, then a country allow
+# list, AWS managed rule groups and per-IP rate limits (tight ones on
+# /ssn/reveal and /ssn/tickets) decide what gets blocked.
 #
 # ALB health checks to /health go straight from the ALB nodes to the
 # targets. They never pass through the web ACL, so no rule here can mark a
@@ -19,8 +19,8 @@ locals {
 
 resource "aws_wafv2_web_acl" "this" {
   # Log4j is blocked by KnownBadInputs whenever count_only is false (the
-  # testing default). checkov can't resolve the variable, and count-only
-  # first rollouts are on purpose.
+  # default, and what every environment sets now). checkov can't resolve the
+  # variable, and count_only stays as a deliberate first-rollout mode.
   #checkov:skip=CKV_AWS_192:blocks when count_only = false; count is a deliberate first-rollout mode
   name        = "${var.name_prefix}-alb"
   description = "${var.name_prefix} ALB: managed rules and a per-IP rate limit"
@@ -32,6 +32,47 @@ resource "aws_wafv2_web_acl" "this" {
 
   # Lower priority runs first. The cheap IP checks go before the bigger rule
   # sets.
+
+  # Country allow list: any request from outside geo_allow_countries gets a
+  # 403. 1 WCU, so it runs first and saves the rest of the rules the work.
+  # WAF maps the source IP to a country, so someone on a VPN in an allowed
+  # country gets through; this only cuts noise, it's not access control
+  # (the ALB security group is).
+  dynamic "rule" {
+    for_each = length(var.geo_allow_countries) > 0 ? [1] : []
+    content {
+      name     = "geo-allow-list"
+      priority = 5
+
+      action {
+        dynamic "block" {
+          for_each = local.rate_action == "block" ? [1] : []
+          content {}
+        }
+        dynamic "count" {
+          for_each = local.rate_action == "count" ? [1] : []
+          content {}
+        }
+      }
+
+      statement {
+        not_statement {
+          statement {
+            geo_match_statement {
+              country_codes = var.geo_allow_countries
+            }
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "${var.name_prefix}-geo-allow-list"
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
   rule {
     name     = "AWSManagedRulesAmazonIpReputationList"
     priority = 10
@@ -57,6 +98,46 @@ resource "aws_wafv2_web_acl" "this" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name_prefix}-AWSManagedRulesAmazonIpReputationList"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Tor exits, open proxies and paid VPN ranges (AnonymousIPList) are
+  # blocked. HostingProviderIPList, which covers whole cloud provider ranges,
+  # only counts: CI runners, uptime checks and anyone working from a cloud
+  # VM live there, and blocking it would break more than it saves. 50 WCU.
+  rule {
+    name     = "AWSManagedRulesAnonymousIpList"
+    priority = 12
+
+    override_action {
+      dynamic "none" {
+        for_each = local.managed_override == "none" ? [1] : []
+        content {}
+      }
+      dynamic "count" {
+        for_each = local.managed_override == "count" ? [1] : []
+        content {}
+      }
+    }
+
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesAnonymousIpList"
+
+        rule_action_override {
+          name = "HostingProviderIPList"
+          action_to_use {
+            count {}
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-AWSManagedRulesAnonymousIpList"
       sampled_requests_enabled   = true
     }
   }

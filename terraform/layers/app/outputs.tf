@@ -2,8 +2,28 @@
 # all of these from this one unit. Secret ARN only, never the value.
 
 output "app_url" {
-  description = "Open this in the browser during the demo."
-  value       = "http://${module.ecs.alb_dns_name}"
+  description = "Open this in the browser during the demo. HTTPS; port 80 redirects here."
+  value       = "https://${module.ecs.app_host}"
+}
+
+output "alb_dns_name" {
+  description = "Public DNS name of the ALB."
+  value       = module.ecs.alb_dns_name
+}
+
+output "certificate_arn" {
+  description = "ACM cert on the HTTPS listener."
+  value       = module.ecs.certificate_arn
+}
+
+output "certificate_self_signed" {
+  description = "True when the listener uses the self-signed cert, so curl needs -k or --cacert."
+  value       = module.ecs.certificate_self_signed
+}
+
+output "self_signed_cert_pem" {
+  description = "Public PEM of the self-signed cert, for curl --cacert. Null with a real domain. Not a secret."
+  value       = module.ecs.self_signed_cert_pem
 }
 
 output "ecs_cluster_name" {

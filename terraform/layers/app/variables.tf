@@ -132,6 +132,24 @@ variable "waf_count_only" {
   type        = bool
 }
 
+variable "waf_geo_allow_countries" {
+  description = "ISO country codes the WAF lets through. Everything else gets a 403. Empty turns the geo rule off. Set per environment in env.hcl."
+  type        = list(string)
+  default     = []
+}
+
+variable "domain_name" {
+  description = "DNS name for the ALB with a public ACM cert. Null means a self-signed cert. Set per environment in env.hcl."
+  type        = string
+  default     = null
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone for domain_name. Set per environment in env.hcl."
+  type        = string
+  default     = null
+}
+
 variable "payment_max_receive_count" {
   description = "Receives before a payment request moves to the dead letter queue."
   type        = number

@@ -28,7 +28,14 @@ inputs:
     description: app_desired_count in env.hcl.
     required: true
   app-url:
+    description: HTTPS URL of the app (app_url output).
     required: true
+  app-cert-self-signed:
+    description: >-
+      "true" when the ALB uses the self-signed cert (no domain_name), so the
+      summary tells people to use curl -k.
+    required: false
+    default: "true"
   migration-family:
     required: true
   db-logins-family:
@@ -97,6 +104,7 @@ runs:
         APP_IMAGE: ${{ inputs.app-image }}
         APP_FAMILY: ${{ inputs.app-family }}
         APP_URL: ${{ inputs.app-url }}
+        APP_CERT_SELF_SIGNED: ${{ inputs.app-cert-self-signed }}
         APP_DESIRED_COUNT: ${{ inputs.app-desired-count }}
       run: |
         task_def=$(bash scripts/register-task-def.sh "$APP_FAMILY" app "$APP_IMAGE" "$TAG")
@@ -105,6 +113,11 @@ runs:
         echo "Waiting for $SERVICE to be stable on $task_def ($APP_IMAGE) with $APP_DESIRED_COUNT tasks"
         aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
         echo "Deployed. Open ${APP_URL}" | tee -a "$GITHUB_STEP_SUMMARY"
+        # The runner never calls the ALB (its security group only lets in
+        # ALB_INGRESS_CIDRS), so this is only a hint for people.
+        if [ "$APP_CERT_SELF_SIGNED" != "false" ]; then
+          echo "Self-signed cert: expect a browser warning, and use curl -k." | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
 
     # Same image as the app, started in SSN vault mode. Private subnets, no
     # load balancer. Rolled after the app so a vault problem never blocks

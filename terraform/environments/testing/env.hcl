@@ -23,9 +23,19 @@ locals {
   ssn_vault_desired_count = 1 # cost; one task is enough to test
   budget_limit_usd        = 10
 
-  # Blocking from day one. ALB only lets in my /32.
+  # Blocking from day one. ALB only lets in my /32. waf_count_only = true
+  # counts instead, for a first rollout of new rules.
   waf_rate_limit = 1000
   waf_count_only = false
+
+  # The WAF answers 403 to any country not listed. [] turns the rule off.
+  waf_geo_allow_countries = ["US"]
+
+  # HTTPS cert. Null for both means a self-signed cert (curl -k). For a real
+  # one, set a name in a public Route 53 zone you own, for example
+  # domain_name = "testing.example.com" and route53_zone_id = "Z0123456789ABC".
+  domain_name     = null
+  route53_zone_id = null
 
   alarm_thresholds = {}
 }
