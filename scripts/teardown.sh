@@ -204,23 +204,74 @@ session_check() {
 
 plan_file() { printf '%s\n' "$(env_dir "$1")/$2.destroy.tfplan"; }
 
-# Destroy plan for one unit, saved for apply. Adds the plan's summary line
-# to SUMMARIES, and the unit to APPLY unless there's nothing to destroy.
+# Reads a saved plan. Sets PLAN_SUMMARY and PLAN_GONE (1 only when the
+# plan is sure to have nothing in it). Tries show -json first, then the
+# plan text. Terragrunt puts a time and "STDOUT terraform:" in front of
+# every line and both carry color codes, so the text match strips those
+# and doesn't care where in the line it is. If neither works the unit
+# counts as not gone, so it still gets applied.
+read_plan() {
+  local env="$1" unit="$2" plan="$3" out="$4" json counts text
+  PLAN_SUMMARY="" PLAN_GONE=0
+
+  if json=$(terragrunt run --tf-forward-stdout \
+    --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
+    show -json "$(native_path "$plan")" 2>/dev/null) &&
+    counts=$(jq -er '
+      [.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
+      | [.output_changes // {} | to_entries[] | select(.value.actions != ["no-op"])] as $o
+      | "\($c | map(select(.change.actions | index("delete"))) | length) \($c | length) \($o | length)"
+    ' <<<"$json" 2>/dev/null); then
+    local deletes changes outputs
+    read -r deletes changes outputs <<<"$counts"
+    if ((changes == 0 && outputs == 0)); then
+      PLAN_SUMMARY="No changes. Nothing left to destroy."
+      PLAN_GONE=1
+    elif ((changes == 0)); then
+      PLAN_SUMMARY="0 to destroy, only outputs left in state"
+    elif ((changes == deletes)); then
+      PLAN_SUMMARY="$deletes to destroy"
+    else
+      PLAN_SUMMARY="$deletes to destroy, $((changes - deletes)) other changes. Read the plan above."
+    fi
+    return 0
+  fi
+
+  text=$(strip_log <"$out" | grep -oE 'Plan: [0-9]+ to add.*|No changes\..*' | tail -n 1 || true)
+  case "$text" in
+    Plan:*) PLAN_SUMMARY="$text" ;;
+    "No changes."*)
+      PLAN_SUMMARY="$text"
+      # Only trust it if the plan has no Plan: line anywhere.
+      strip_log <"$out" | grep -qE 'Plan: [0-9]+ to add' || PLAN_GONE=1
+      ;;
+    *) PLAN_SUMMARY="could not read the plan, read it above. It will still be applied." ;;
+  esac
+}
+
+# Drops color codes and carriage returns from terragrunt output.
+strip_log() {
+  sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//'
+}
+
+# Destroy plan for one unit, saved for apply. Adds the plan's summary to
+# SUMMARIES, and the unit to APPLY unless there's nothing to destroy.
 plan_unit() {
-  local env="$1" unit="$2" plan out summary
+  local env="$1" unit="$2" plan out
   plan=$(plan_file "$env" "$unit")
   CLEANUP+=("$plan")
   out=$(mktemp)
   CLEANUP+=("$out")
 
   info "[$env/$unit] destroy plan"
-  terragrunt run --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
+  terragrunt run --tf-forward-stdout \
+    --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
     plan -destroy -input=false -out="$(native_path "$plan")" | tee "$out" ||
     die "[$env/$unit] destroy plan failed. Nothing was destroyed."
 
-  summary=$(sed 's/\x1b\[[0-9;]*m//g' "$out" | grep -E '^(Plan: |No changes\.)' | tail -n 1 || true)
-  SUMMARIES+=("  $env/$unit: ${summary:-no summary line, read the plan above}")
-  if [[ "$summary" == "No changes."* ]]; then
+  read_plan "$env" "$unit" "$plan" "$out"
+  SUMMARIES+=("  $env/$unit: $PLAN_SUMMARY")
+  if ((PLAN_GONE)); then
     rm -f "$plan"
   else
     APPLY+=("$env/$unit")
@@ -232,7 +283,8 @@ apply_unit() {
   plan=$(plan_file "$env" "$unit")
   session_check "$env/$unit"
   info "[$env/$unit] destroy"
-  terragrunt run --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
+  terragrunt run --tf-forward-stdout \
+    --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
     apply -input=false "$(native_path "$plan")" ||
     die "[$env/$unit] destroy failed. Units before it are gone and nothing after it ran. Fix the error above and run teardown.sh $TARGET again. Finished units plan as No changes and are skipped."
   rm -f "$plan"

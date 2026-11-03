@@ -250,6 +250,9 @@ up. One run does:
   It exits non-zero if anything is.
 
 `--dry-run` stops after the plans. Every run logs to `logs/`.
+The summary counts come from `terraform show -json` on each saved plan,
+with the plan text as a backup. `bash scripts/tests/teardown-plan-summary.sh`
+checks that part with fake terragrunt output, no AWS needed.
 
 The units need the same values the pipeline passes in. It reads
 `TF_STATE_BUCKET` and `MIGDEMO_OWNER` from the testing bootstrap tfvars,
