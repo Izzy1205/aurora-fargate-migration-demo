@@ -27,5 +27,11 @@ locals {
   waf_rate_limit = 1000
   waf_count_only = false
 
+  # HTTPS cert. Null for both means a self-signed cert (curl -k). For a real
+  # one, set a name in a public Route 53 zone you own, for example
+  # domain_name = "testing.example.com" and route53_zone_id = "Z0123456789ABC".
+  domain_name     = null
+  route53_zone_id = null
+
   alarm_thresholds = {}
 }

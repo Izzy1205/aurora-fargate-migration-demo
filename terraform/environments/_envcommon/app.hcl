@@ -67,5 +67,9 @@ inputs = {
   waf_rate_limit = local.env.waf_rate_limit
   waf_count_only = local.env.waf_count_only
 
+  # Null for both means a self-signed cert on the HTTPS listener.
+  domain_name     = local.env.domain_name
+  route53_zone_id = local.env.route53_zone_id
+
   budget_email = get_env("MIGDEMO_BUDGET_EMAIL")
 }

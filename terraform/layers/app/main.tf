@@ -33,6 +33,10 @@ module "ecs" {
   app_security_group_id = var.app_security_group_id
   app_port              = var.app_port
 
+  # Null domain_name means a self-signed cert. See modules/ecs/tls.tf.
+  domain_name     = var.domain_name
+  route53_zone_id = var.route53_zone_id
+
   permissions_boundary_arn = local.permissions_boundary_arn
 
   app_image                = "${module.registry.repository_urls["app"]}:${var.app_image_tag}"

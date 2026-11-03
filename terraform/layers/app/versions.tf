@@ -9,5 +9,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    # Self-signed cert for the HTTPS listener when no domain is set
+    # (modules/ecs/tls.tf). Local only, no API calls.
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.4"
+    }
   }
 }

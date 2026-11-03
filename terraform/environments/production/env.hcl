@@ -28,6 +28,12 @@ locals {
   waf_rate_limit = 2000
   waf_count_only = true
 
+  # HTTPS cert. Null for both means a self-signed cert (curl -k). For a real
+  # one, set a name in a public Route 53 zone you own, for example
+  # domain_name = "production.example.com" and route53_zone_id = "Z0123456789ABC".
+  domain_name     = null
+  route53_zone_id = null
+
   # max 8 ACU allows well over 1,000 connections.
   alarm_thresholds = {
     elb_5xx_count                = 20

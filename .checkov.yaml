@@ -6,10 +6,7 @@ framework:
 compact: true
 quiet: true
 skip-check:
-  # No domain or cert for a throwaway demo. ALB is locked to one /32.
-  - CKV_AWS_2      # ALB listener HTTPS
-  - CKV_AWS_103    # TLS 1.2 on listener
-  - CKV2_AWS_20    # HTTP to HTTPS redirect
+  # TLS ends at the ALB. The hop to the tasks stays HTTP inside the VPC.
   - CKV_AWS_378    # target group HTTP
   - CKV_AWS_91     # ALB access logs
   # Torn down same day, protection would only block teardown.

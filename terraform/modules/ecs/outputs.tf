@@ -56,6 +56,26 @@ output "alb_dns_name" {
   value       = aws_lb.this.dns_name
 }
 
+output "app_host" {
+  description = "Host name clients use: domain_name when set, otherwise the ALB DNS name."
+  value       = coalesce(var.domain_name, aws_lb.this.dns_name)
+}
+
+output "certificate_arn" {
+  description = "ACM cert on the HTTPS listener."
+  value       = local.certificate_arn
+}
+
+output "certificate_self_signed" {
+  description = "True when the HTTPS listener uses the self-signed cert, so clients need curl -k or --cacert."
+  value       = !local.use_domain
+}
+
+output "self_signed_cert_pem" {
+  description = "Public PEM of the self-signed cert, for curl --cacert. Null with a real domain."
+  value       = local.use_domain ? null : tls_self_signed_cert.self_signed[0].cert_pem
+}
+
 # Alarm dimensions for the observability unit. CloudWatch wants the ARN
 # suffix ("app/<name>/<id>" and "targetgroup/<name>/<id>"), not the full ARN.
 output "alb_arn_suffix" {

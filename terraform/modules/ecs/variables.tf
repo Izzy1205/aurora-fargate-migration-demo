@@ -112,3 +112,43 @@ variable "app_environment" {
   }))
   default = []
 }
+
+variable "domain_name" {
+  description = "DNS name for the ALB, such as app.example.com. Set it with route53_zone_id to get a public ACM cert. Null uses a self-signed cert."
+  type        = string
+  default     = null
+}
+
+variable "route53_zone_id" {
+  description = "Public Route 53 hosted zone for domain_name. Holds the ACM validation records and the alias record. Required when domain_name is set."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.domain_name == null || var.route53_zone_id != null
+    error_message = "Set route53_zone_id when domain_name is set."
+  }
+}
+
+variable "ssl_policy" {
+  description = "ALB TLS security policy for the HTTPS listener."
+  type        = string
+  default     = "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"
+}
+
+variable "self_signed_validity_hours" {
+  description = "Lifetime of the self-signed cert, used when domain_name is null."
+  type        = number
+  default     = 8760 # 1 year
+}
+
+variable "self_signed_early_renewal_hours" {
+  description = "How long before expiry the next plan replaces the self-signed cert."
+  type        = number
+  default     = 720 # 30 days
+
+  validation {
+    condition     = var.self_signed_early_renewal_hours < var.self_signed_validity_hours
+    error_message = "Early renewal has to start before the cert expires."
+  }
+}
