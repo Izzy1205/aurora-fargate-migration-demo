@@ -124,6 +124,12 @@ variable "deny_non_kms_uploads" {
   default     = false
 }
 
+variable "deny_wrong_kms_key" {
+  description = "Deny PutObject that names a KMS key other than this bucket's. No key id header still gets the bucket default key. Turn on after deny_non_kms_uploads (see README)."
+  type        = bool
+  default     = false
+}
+
 variable "deny_ci_bucket_admin" {
   description = "Deny the GitHub CI roles changes to bucket settings and deletes of old object versions."
   type        = bool

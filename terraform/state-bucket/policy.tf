@@ -8,6 +8,15 @@ resource "aws_s3_bucket_policy" "state" {
 
 locals {
   bucket_arn = "arn:${local.partition}:s3:::${var.bucket_name}"
+
+  # Every way a request can name the state key: key ARN, key id, alias
+  # name and alias ARN.
+  state_key_ids = var.use_kms ? [
+    aws_kms_key.state[0].arn,
+    aws_kms_key.state[0].key_id,
+    aws_kms_alias.state[0].name,
+    "arn:${local.partition}:kms:${var.aws_region}:${local.account_id}:${aws_kms_alias.state[0].name}",
+  ] : []
 }
 
 data "aws_iam_policy_document" "bucket" {
@@ -52,9 +61,13 @@ data "aws_iam_policy_document" "bucket" {
   }
 
   # Off by default. Until every backend sets kms_key_id, Terraform sends
-  # AES256 on state and lock writes and this would block them. Uploads
-  # with no header still go through and get the bucket default key, which
-  # is how tg-plan.yml uploads saved plans. UploadPart has no header either.
+  # AES256 on state and lock writes and this would block them. Only fires
+  # when the request has an encryption header. A Deny with
+  # StringNotEqualsIfExists still denies when the key is missing, so the
+  # Null check is what lets uploads with no header through. Those get the
+  # bucket default key, which is how tg-plan.yml uploads saved plans.
+  # UploadPart has no header either.
+  # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html#Conditions_IfExists
   dynamic "statement" {
     for_each = var.use_kms && var.deny_non_kms_uploads ? [1] : []
 
@@ -70,9 +83,55 @@ data "aws_iam_policy_document" "bucket" {
       }
 
       condition {
-        test     = "StringNotEqualsIfExists"
+        test     = "StringNotEquals"
         variable = "s3:x-amz-server-side-encryption"
         values   = ["aws:kms"]
+      }
+
+      condition {
+        test     = "Null"
+        variable = "s3:x-amz-server-side-encryption"
+        values   = ["false"]
+      }
+    }
+  }
+
+  # Off by default. Denies a PutObject (and CopyObject into the bucket)
+  # that names a KMS key other than this bucket's. No key id header means
+  # the bucket default key, so the Null check lets that through, same as
+  # above. Lock files go through this too: the backend sends the same
+  # kms_key_id on the .tflock.
+  #
+  # The backends send the alias (root.hcl, bootstrap.sh) and
+  # reencrypt-state.sh sends the key ARN. AWS says to write this condition
+  # with the key ARN but doesn't say whether S3 resolves an alias before it
+  # checks, so every form of this key is listed. The alias can only point
+  # here as long as CI can't move it (DenyCiKeyAdmin in kms.tf).
+  # https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html#require-sse-kms
+  dynamic "statement" {
+    for_each = var.use_kms && var.deny_wrong_kms_key ? [1] : []
+
+    content {
+      sid       = "DenyWrongKmsKey"
+      effect    = "Deny"
+      actions   = ["s3:PutObject"]
+      resources = ["${local.bucket_arn}/*"]
+
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+
+      condition {
+        test     = "StringNotEquals"
+        variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+        values   = local.state_key_ids
+      }
+
+      condition {
+        test     = "Null"
+        variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+        values   = ["false"]
       }
     }
   }
