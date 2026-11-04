@@ -110,8 +110,9 @@ Apply:
 Move testing in, when ready:
 
 14. Add the testing account to `ou_account_ids` in terraform.tfvars.
-15. `./scripts/bootstrap.sh org`: no resource changes. It shows the account's current parent and its SCPs, then asks you to type `move`.
-16. `./scripts/bootstrap.sh all --dry-run` (as `<testing>`): should plan no changes.
-17. Run the PR workflow once, or push a docs change, to see a CI plan pass.
+15. `./scripts/bootstrap.sh org --dry-run`: no resource changes, one output change (`ou_account_ids`). It lists each account it would move and where it is now.
+16. `./scripts/bootstrap.sh org`: type `org` to save the new list to state, then it shows the account's current parent and its SCPs and asks you to type `move`. An account already in the OU is skipped.
+17. `./scripts/bootstrap.sh all --dry-run` (as `<testing>`): should plan no changes.
+18. Run the PR workflow once, or push a docs change, to see a CI plan pass.
 
 Undo a move: `aws organizations move-account --account-id <id> --source-parent-id <ou id> --destination-parent-id <old parent> --profile <mgmt>`.
