@@ -32,9 +32,12 @@ One run does:
   - preflight: tool versions, AWS session, account, region and how many
     tagged resources each env has
   - a destroy plan for every unit, with a summary
+  - list active AWS Backup jobs on the env's vaults
   - one typed confirmation (the env name, or all)
   - apply the saved plans in order, checking the AWS session before each
-    unit, and stop at the first failure
+    unit, and stop at the first failure. Before data, stop any active
+    backup jobs and wait until they end (MIGDEMO_BACKUP_WAIT_SECONDS,
+    default 1200), since a vault with a running job can't be deleted.
   - check that nothing is left: RDS, ALB, ECS, VPC endpoints, VPC, WAF.
     Exits non-zero if anything is.
 
@@ -254,6 +257,14 @@ strip_log() {
   sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//'
 }
 
+# A backend change (like a new state key) leaves old .terragrunt-cache dirs
+# that terraform won't init over.
+backend_hint() {
+  strip_log <"$1" | grep -q 'Backend configuration changed' || return 0
+  warn "The backend changed since these units were last run. Clear the local caches from the repo root, then run again:"
+  warn "  find terraform -type d -name .terragrunt-cache -prune -exec rm -rf {} +"
+}
+
 # Destroy plan for one unit, saved for apply. Adds the plan's summary to
 # SUMMARIES, and the unit to APPLY unless there's nothing to destroy.
 plan_unit() {
@@ -266,8 +277,10 @@ plan_unit() {
   info "[$env/$unit] destroy plan"
   terragrunt run --tf-forward-stdout \
     --working-dir "$(native_path "$(env_dir "$env")/$unit")" -- \
-    plan -destroy -input=false -out="$(native_path "$plan")" | tee "$out" ||
+    plan -destroy -input=false -out="$(native_path "$plan")" | tee "$out" || {
+    backend_hint "$out"
     die "[$env/$unit] destroy plan failed. Nothing was destroyed."
+  }
 
   read_plan "$env" "$unit" "$plan" "$out"
   SUMMARIES+=("  $env/$unit: $PLAN_SUMMARY")
@@ -337,6 +350,110 @@ env_count() {
   if [[ -z "$list" ]]; then echo 0; else grep -c . <<<"$list"; fi
 }
 
+# ---- backup jobs ----
+
+# AWS Backup won't delete a vault while a backup or copy job is still
+# writing to it, and the data destroy fails on it. A deploy that just
+# rebuilt the stack often has one running. These find them, stop the
+# backup jobs and wait for both kinds to finish. Restore jobs write to a
+# new resource, not a vault, so they don't block it.
+# States from ListBackupJobs and ListCopyJobs that are not final.
+BACKUP_ACTIVE_STATES=(CREATED PENDING RUNNING ABORTING)
+COPY_ACTIVE_STATES=(CREATED RUNNING)
+BACKUP_WAIT_SECONDS="${MIGDEMO_BACKUP_WAIT_SECONDS:-1200}"
+BACKUP_POLL_SECONDS="${MIGDEMO_BACKUP_POLL_SECONDS:-20}"
+
+# "region vault" lines for every vault of this env: any vault named
+# <project>-<env>-aurora*, listed live from AWS so a renamed or extra vault
+# still shows up. The DR region only when the copy is on, since an SCP can
+# block it. Stops if a lookup fails, so an AWS error never reads as "none".
+backup_vaults() {
+  local env="$1" prefix="$PROJECT-$1" region dr names r n
+  region=$(env_region "$env")
+  r="$region"
+  if [[ "$(hcl_raw dr_copy_enabled "$(env_dir "$env")/env.hcl")" == true ]]; then
+    dr=$(hcl_value dr_region "$(env_dir "$env")/env.hcl")
+    [[ -n "$dr" ]] && r="$region $dr"
+  fi
+  for region in $r; do
+    names=$(aws backup list-backup-vaults --region "$region" --output json |
+      jq -r --arg p "$prefix-aurora" '.BackupVaultList[]? | select(.BackupVaultName | startswith($p)) | .BackupVaultName') ||
+      die "[$env] could not list backup vaults in $region."
+    [[ -z "$names" ]] || while read -r n; do printf '%s %s\n' "$region" "$n"; done <<<"$names"
+  done
+}
+
+# Active jobs on the env's vaults, one "kind region id state vault" line
+# each. kind is backup or copy.
+active_backup_jobs() {
+  local env="$1" vaults region vault st out
+  vaults=$(backup_vaults "$env") || exit 1
+  [[ -n "$vaults" ]] || return 0
+  while read -r region vault; do
+    for st in "${BACKUP_ACTIVE_STATES[@]}"; do
+      out=$(aws backup list-backup-jobs --region "$region" --by-backup-vault-name "$vault" \
+        --by-state "$st" --output json) || die "[$env] could not list backup jobs for $vault."
+      jq -r --arg r "$region" '.BackupJobs[]? | "backup \($r) \(.BackupJobId) \(.State) \(.BackupVaultName)"' <<<"$out"
+    done
+    # Copy jobs can only be filtered by destination, so list the active
+    # ones and match the vault on either end.
+    for st in "${COPY_ACTIVE_STATES[@]}"; do
+      out=$(aws backup list-copy-jobs --region "$region" --by-state "$st" --output json) ||
+        die "[$env] could not list copy jobs in $region."
+      jq -r --arg r "$region" --arg v "$vault" '.CopyJobs[]?
+        | select((.SourceBackupVaultArn // "" | endswith(":backup-vault:" + $v))
+              or (.DestinationBackupVaultArn // "" | endswith(":backup-vault:" + $v)))
+        | "copy \($r) \(.CopyJobId) \(.State) \($v)"' <<<"$out"
+    done
+  done <<<"$vaults"
+}
+
+indent() {
+  local l
+  while IFS= read -r l; do printf '  %s\n' "$l"; done
+}
+
+# Prints the env's active jobs. 1 if there are any.
+show_backup_jobs() {
+  local env="$1" jobs
+  jobs=$(active_backup_jobs "$env") || exit 1
+  if [[ -z "$jobs" ]]; then
+    info "[$env] no active backup or copy jobs"
+    return 0
+  fi
+  info "[$env] active backup jobs (kind region id state vault):"
+  indent <<<"$jobs"
+  return 1
+}
+
+# Stops the env's backup jobs and waits until none are left, backup or
+# copy. Copy jobs can't be stopped, only waited on. Only runs after the
+# typed confirmation.
+clear_backup_jobs() {
+  local env="$1" jobs kind region id state vault waited=0
+  session_check "$env backup jobs"
+  show_backup_jobs "$env" && return 0
+  jobs=$(active_backup_jobs "$env") || exit 1
+  while read -r kind region id state vault; do
+    [[ "$kind" == backup && "$state" != ABORTING ]] || continue
+    info "[$env] stopping backup job $id on $vault"
+    aws backup stop-backup-job --region "$region" --backup-job-id "$id" ||
+      warn "[$env] could not stop backup job $id. Waiting for it to end."
+  done <<<"$jobs"
+  while :; do
+    jobs=$(active_backup_jobs "$env") || exit 1
+    [[ -n "$jobs" ]] || break
+    if ((waited >= BACKUP_WAIT_SECONDS)); then
+      indent <<<"$jobs" >&2
+      die "[$env] backup jobs still active after ${BACKUP_WAIT_SECONDS}s (above). Nothing in data was destroyed. Check them in the AWS Backup console, then run teardown.sh $TARGET again."
+    fi
+    info "[$env] waiting on $(grep -c . <<<"$jobs") backup job(s), ${waited}s of ${BACKUP_WAIT_SECONDS}s"
+    sleep "$BACKUP_POLL_SECONDS"
+    waited=$((waited + BACKUP_POLL_SECONDS))
+  done
+  info "[$env] no active backup jobs left"
+}
+
 # ---- run ----
 
 log_init "teardown-$TARGET"
@@ -394,6 +511,11 @@ done
 info "Summary"
 printf '%s\n' "${SUMMARIES[@]}"
 
+for env in "${RUN[@]}"; do
+  # Listed only. A real run stops them right before the data unit.
+  show_backup_jobs "$env" || ((DRY_RUN)) || info "[$env] these get stopped before data is destroyed."
+done
+
 if ((DRY_RUN)); then
   info "Dry run: nothing destroyed."
   exit 0
@@ -404,6 +526,9 @@ confirm "$TARGET" "destroy everything planned above in: ${RUN[*]}"
 for env in "${RUN[@]}"; do
   for unit in "${UNITS[@]}"; do
     if [[ " ${APPLY[*]-} " == *" $env/$unit "* ]]; then
+      # Checked here, not up front, so a job that starts while app goes
+      # down is still caught.
+      [[ "$unit" != data ]] || clear_backup_jobs "$env"
       apply_unit "$env" "$unit"
     else
       info "[$env/$unit] nothing to destroy"
