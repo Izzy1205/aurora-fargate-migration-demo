@@ -1,0 +1,28 @@
+# Which AWS account each env lives in. Copy to terraform/accounts.hcl
+# (gitignored, like the tfvars) and fill in what you have.
+#
+# Read by scripts/lib.sh (bootstrap.sh, teardown.sh, reencrypt-state.sh)
+# and by terraform/root.hcl. Region stays in environments/<env>/env.hcl.
+#
+#   <env>_account_id   12 digit account ID. Scripts stop when you're
+#                      signed in to anything else, and the generated
+#                      provider gets allowed_account_ids.
+#   <env>_aws_profile  Optional AWS CLI profile (Identity Center, say).
+#                      Scripts switch AWS_PROFILE to it for that env.
+#
+# Leave a line out to fall back to the old single pin (MIGDEMO_ACCOUNT_ID
+# or expected_account_id in terraform/state-bucket/terraform.tfvars).
+# MIGDEMO_<ENV>_ACCOUNT_ID and MIGDEMO_<ENV>_AWS_PROFILE win over this file.
+#
+# Today all three envs share one account. See docs/adr/0001-account-per-env.md.
+
+locals {
+  testing_account_id  = "REPLACE-ME"
+  testing_aws_profile = ""
+
+  stage_account_id  = "REPLACE-ME"
+  stage_aws_profile = ""
+
+  production_account_id  = "REPLACE-ME"
+  production_aws_profile = ""
+}

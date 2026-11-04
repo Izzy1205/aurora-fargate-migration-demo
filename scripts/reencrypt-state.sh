@@ -11,7 +11,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/reencrypt-state.sh [--dry-run] [--prefix <prefix>]
+  scripts/reencrypt-state.sh [--dry-run] [--prefix <prefix>] [--env <env>]
 
 Lists every object in the state bucket not encrypted with the state key,
 then, after you type reencrypt, copies each one in place with SSE-KMS.
@@ -19,6 +19,9 @@ then, after you type reencrypt, copies each one in place with SSE-KMS.
 Options:
   --dry-run          List what would be copied. Changes nothing.
   --prefix <prefix>  Only objects under this prefix. Default: whole bucket.
+  --env <env>        Whose account and profile to use, from
+                     terraform/accounts.hcl. Default: testing. An env with
+                     its own account reads terraform/state-bucket/<env>.tfvars.
   -h, --help         Show this help.
 
 Values:
@@ -33,6 +36,7 @@ USAGE
 
 DRY_RUN=0
 PREFIX=""
+ENV_NAME=testing
 while (($#)); do
   case "$1" in
     -h | --help)
@@ -43,6 +47,12 @@ while (($#)); do
     --prefix)
       [[ $# -ge 2 ]] || die "--prefix needs a value."
       PREFIX="$2"
+      shift
+      ;;
+    --env)
+      [[ $# -ge 2 ]] || die "--env needs a value."
+      [[ "$2" == testing || "$2" == stage || "$2" == production ]] || die "--env takes testing, stage or production."
+      ENV_NAME="$2"
       shift
       ;;
     *)
@@ -62,6 +72,10 @@ main() {
   local bucket region kms key_arn keys k meta sse kid
   local todo=() locks=() ok=0 skipped=0
 
+  # An env in its own account has its own bucket and tfvars.
+  if [[ "$ENV_NAME" != testing && "$(env_account "$ENV_NAME")" != "$(env_account testing)" ]]; then
+    SB_TFVARS="$REPO_ROOT/terraform/state-bucket/$ENV_NAME.tfvars"
+  fi
   bucket="${TF_STATE_BUCKET:-}"
   [[ -n "$bucket" || ! -f "$SB_TFVARS" ]] || bucket=$(hcl_value bucket_name "$SB_TFVARS")
   [[ -n "$bucket" ]] || die "Set TF_STATE_BUCKET, or bucket_name in terraform/state-bucket/terraform.tfvars."
@@ -72,8 +86,7 @@ main() {
   log_init reencrypt-state
   ((DRY_RUN)) && info "Dry run"
   require_tools aws jq
-  ensure_session
-  check_account
+  use_env "$ENV_NAME"
 
   # tr -d '\r': aws and jq on Windows can end lines with CRLF.
   key_arn=$(aws kms describe-key --key-id "$kms" --region "$region" --query KeyMetadata.Arn --output text | tr -d '\r') ||

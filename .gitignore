@@ -12,6 +12,8 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
+# Account map, see terraform/accounts.hcl.example
+terraform/accounts.hcl
 backend.hcl
 override.tf
 override.tf.json
