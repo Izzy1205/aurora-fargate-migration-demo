@@ -13,3 +13,7 @@ bucket_name = "REPLACE-ME-tfstate-bucket"
 # Deny uploads that ask for SSE-S3. Leave off until every env has been
 # re-inited with kms_key_id (README, state encryption).
 # deny_non_kms_uploads = false
+
+# Deny uploads that name any other KMS key. Turn on after
+# deny_non_kms_uploads (README, state encryption).
+# deny_wrong_kms_key = false
