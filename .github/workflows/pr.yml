@@ -233,6 +233,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Every module with *.tftest.hcl. Plan only, with placeholder keys and
+      # overridden data, so no AWS creds. This job has no id-token.
+      - name: terraform test
+        run: |
+          dirs=$(find terraform -name '*.tftest.hcl' -not -path '*/.terraform/*' -not -path '*/.terragrunt-cache/*' |
+            sed 's#/tests/[^/]*$##; s#/[^/]*\.tftest\.hcl$##' | sort -u)
+          [ -n "$dirs" ] || { echo "no tftest files found"; exit 1; }
+          for d in $dirs; do
+            echo "::group::$d"
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" test
+            echo "::endgroup::"
+          done
+
   iac-scan:
     name: checkov (IaC security scan)
     runs-on: ubuntu-latest

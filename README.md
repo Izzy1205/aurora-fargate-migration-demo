@@ -326,12 +326,29 @@ up. One run does:
 - check that nothing is left: RDS, ALB, ECS, VPC endpoints, VPC, WAF.
   It exits non-zero if anything is.
 
+Right before the data unit it looks for AWS Backup jobs still running
+on the env's vaults. A vault can't be deleted while one is, and a deploy
+that just rebuilt the stack often starts one. It stops them, waits for
+them and any copy jobs to end (20 minutes by default, set
+`MIGDEMO_BACKUP_WAIT_SECONDS`), then goes on. `--dry-run` only lists them.
+
+If a plan fails with `Backend configuration changed` (after a change to
+the state backend, like a new KMS key), clear the local caches and run it
+again. teardown.sh prints the same hint:
+
+```bash
+find terraform -type d -name .terragrunt-cache -prune -exec rm -rf {} +
+```
+
 `--dry-run` stops after the plans. Every run logs to `logs/`.
 The summary counts come from `terraform show -json` on each saved plan,
 with the plan text as a backup. `bash scripts/tests/teardown-plan-summary.sh`
 checks that part with fake terragrunt output, no AWS needed.
+`bash scripts/tests/teardown-backup-jobs.sh` checks the backup job
+handling with a fake aws.
 `bash scripts/tests/bootstrap-tfvars.sh` checks the bootstrap tfvars
-handling the same way. The PR workflow runs both, plus shellcheck.
+handling the same way. The PR workflow runs every script test, plus
+shellcheck and `terraform test` in each module that has tests.
 
 The units need the same values the pipeline passes in. It reads
 `TF_STATE_BUCKET` and `MIGDEMO_OWNER` from
