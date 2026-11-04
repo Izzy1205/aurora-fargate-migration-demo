@@ -247,6 +247,11 @@ Access review:
 - All three are denied the database logins, the SSN key and pepper,
   other envs' state, saved plans, secrets and keys, and assuming any
   other role. The vault roles' trust can't be changed from CI.
+- Terraform (apply) can't run tasks, and can't create, change or delete
+  ECS services outside its own env's cluster.
+- The state bucket and its key deny CI admin by role name,
+  `role/migdemo-*-github-*`. The github_oidc tests fail if a CI role
+  name stops matching.
 - Check every few months, or after the account sits idle, that the
   roles still only trust their own GitHub environments and nothing else
   in the account trusts an outside account.

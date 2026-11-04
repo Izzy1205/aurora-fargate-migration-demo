@@ -57,6 +57,11 @@ data "aws_iam_policy_document" "workload_boundary" {
       variable = "kms:ViaService"
       values   = ["secretsmanager.${local.region}.amazonaws.com"]
     }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [local.account]
+    }
   }
 
   # The app task sends and consumes payment requests. Project queues only.

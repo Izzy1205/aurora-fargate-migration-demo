@@ -24,7 +24,7 @@ on:
     branches: [main]
     # Nothing here changes what gets deployed: docs, the local operator
     # scripts and their tests, the hand-applied bootstrap and state bucket
-    # roots, workflows this one never calls, and repo config only PR checks
+    # roots (github_oidc is only used by bootstrap), workflows this one never calls, and repo config only PR checks
     # or local tools read. Keep infra.yml, tg-plan.yml, tg-apply.yml,
     # .github/actions/**, register-task-def.sh and run-migration.sh off
     # this list, deploy runs them. A push that also touches any other file
@@ -39,6 +39,7 @@ on:
       - scripts/reencrypt-state.sh
       - scripts/tests/**
       - terraform/bootstrap/**
+      - terraform/modules/github_oidc/**
       - terraform/state-bucket/**
       - .github/workflows/pr.yml
       - .github/workflows/codeql.yml

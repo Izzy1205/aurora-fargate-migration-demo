@@ -75,6 +75,7 @@ data "aws_iam_policy_document" "apply" {
     data.aws_iam_policy_document.deny_state_key_outside_s3.json,
     data.aws_iam_policy_document.deny_peer_envs.json,
     data.aws_iam_policy_document.deny_role_escalation.json,
+    data.aws_iam_policy_document.deny_services_outside_cluster.json,
   ]
 
   statement {
@@ -246,6 +247,19 @@ data "aws_iam_policy_document" "apply" {
     effect    = "Deny"
     actions   = ["ecs:RunTask", "ecs:StartTask", "ecs:ExecuteCommand"]
     resources = ["*"]
+  }
+}
+
+# Services only in this env's own cluster. Service ARNs carry the cluster
+# name (service/CLUSTER/SERVICE). CreateService and UpdateService have no
+# ecs:cluster condition key, so match on the ARN. The deploy role doesn't
+# need this, it only gets UpdateService on its own services.
+data "aws_iam_policy_document" "deny_services_outside_cluster" {
+  statement {
+    sid           = "NoServicesOutsideOwnCluster"
+    effect        = "Deny"
+    actions       = ["ecs:CreateService", "ecs:UpdateService", "ecs:DeleteService"]
+    not_resources = [local.cluster_services]
   }
 }
 
