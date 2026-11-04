@@ -95,12 +95,16 @@ data "aws_iam_policy_document" "kms" {
   }
 
   # The apply role has PowerUserAccess, which includes KMS admin actions.
+  # The alias actions are here because the bucket policy trusts the alias
+  # (DenyWrongKmsKey), so CI can't move it to another key or take it.
   statement {
     sid    = "DenyCiKeyAdmin"
     effect = "Deny"
     actions = [
       "kms:CancelKeyDeletion",
+      "kms:CreateAlias",
       "kms:CreateGrant",
+      "kms:DeleteAlias",
       "kms:DisableKey",
       "kms:DisableKeyRotation",
       "kms:PutKeyPolicy",
@@ -108,6 +112,7 @@ data "aws_iam_policy_document" "kms" {
       "kms:ScheduleKeyDeletion",
       "kms:TagResource",
       "kms:UntagResource",
+      "kms:UpdateAlias",
       "kms:UpdateKeyDescription",
     ]
     resources = ["*"]
