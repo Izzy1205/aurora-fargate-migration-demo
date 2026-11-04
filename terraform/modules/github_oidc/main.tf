@@ -23,6 +23,7 @@ locals {
     for f in ["migrate", "db-logins"] :
     "arn:${local.part}:ecs:${local.region}:${local.account}:task-definition/${local.p}-${f}:*"
   ]
+  cluster_services    = "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.p}-cluster/*"
   cluster_tasks       = "arn:${local.part}:ecs:${local.region}:${local.account}:task/${local.p}-cluster/*"
   ecr_repo_arns       = [for r in ["app", "migrate"] : "arn:${local.part}:ecr:${local.region}:${local.account}:repository/${local.p}/${r}"]
   migration_log_group = "arn:${local.part}:logs:${local.region}:${local.account}:log-group:/ecs/${local.p}/migrate:*"

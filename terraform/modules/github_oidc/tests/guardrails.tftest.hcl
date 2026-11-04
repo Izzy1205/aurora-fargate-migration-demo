@@ -159,6 +159,46 @@ run "testing_denies" {
     ])
     error_message = "The plan role must not get a KMS allow."
   }
+
+  # M3: apply can only create, change or delete services in its own cluster.
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.deny_services_outside_cluster.json).Statement : (
+        s.Effect == "Deny" &&
+        toset(s.Action) == toset(["ecs:CreateService", "ecs:UpdateService", "ecs:DeleteService"]) &&
+        s.NotResource == "arn:aws:ecs:us-east-2:111111111111:service/migdemo-testing-cluster/*"
+      ) if s.Sid == "NoServicesOutsideOwnCluster"
+    ]) && contains(data.aws_iam_policy_document.apply.source_policy_documents, data.aws_iam_policy_document.deny_services_outside_cluster.json)
+    error_message = "Apply must be denied services outside migdemo-testing-cluster."
+  }
+
+  # The app layer's services must sit inside that cluster, or apply breaks.
+  assert {
+    condition     = alltrue([for a in local.service_arns : startswith(a, "arn:aws:ecs:us-east-2:111111111111:service/migdemo-testing-cluster/")])
+    error_message = "The deploy role's services must be in the cluster apply is allowed."
+  }
+
+  # L1: Secrets Manager decrypt only for callers in this account.
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.workload_boundary.json).Statement : (
+        s.Condition["StringEquals"]["kms:ViaService"] == "secretsmanager.us-east-2.amazonaws.com" &&
+        s.Condition["StringEquals"]["kms:CallerAccount"] == "111111111111"
+      ) if s.Sid == "DecryptSecretViaSecretsManager"
+    ]) && contains([for s in jsondecode(data.aws_iam_policy_document.workload_boundary.json).Statement : s.Sid], "DecryptSecretViaSecretsManager")
+    error_message = "DecryptSecretViaSecretsManager needs kms:ViaService and kms:CallerAccount."
+  }
+
+  # M4: DenyCiBucketAdmin (state-bucket/policy.tf) and DenyCiKeyAdmin
+  # (state-bucket/kms.tf) match role/migdemo-*-github-*. A CI role named
+  # anything else would slip past both.
+  assert {
+    condition = alltrue([
+      for n in [aws_iam_role.plan.name, aws_iam_role.apply.name, aws_iam_role.deploy.name] :
+      can(regex("^migdemo-[^/]+-github-[^/]+$", n))
+    ])
+    error_message = "CI role names must match migdemo-*-github-*, the pattern the state bucket and key policies deny."
+  }
 }
 
 run "production_peers" {
@@ -188,6 +228,14 @@ run "production_peers" {
   assert {
     condition     = contains([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Sid], "PromotionSourcePull")
     error_message = "Promotion pull must stay."
+  }
+
+  assert {
+    condition = alltrue([
+      for n in [aws_iam_role.plan.name, aws_iam_role.apply.name, aws_iam_role.deploy.name] :
+      can(regex("^migdemo-[^/]+-github-[^/]+$", n))
+    ])
+    error_message = "CI role names must match migdemo-*-github-*, the pattern the state bucket and key policies deny."
   }
 }
 
