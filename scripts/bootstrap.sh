@@ -226,7 +226,8 @@ check_tfvars_file() {
 $hits"
 }
 
-# Counts and changed addresses of a saved plan. Sets PLAN_DELETES.
+# Counts and changed addresses of a saved plan. Sets PLAN_DELETES,
+# PLAN_CHANGES (resources), PLAN_OUTPUT_CHANGES and PLAN_JSON.
 summarize_plan() {
   local dir="$1" data="$2" plan="$3" json
   json=$(tf_in "$dir" "$data" show -json "$plan")
@@ -240,6 +241,11 @@ summarize_plan() {
   ' <<<"$json"
   PLAN_DELETES=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' <<<"$json")
   PLAN_CHANGES=$(jq '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' <<<"$json")
+  PLAN_OUTPUT_CHANGES=$(jq '[.output_changes // {} | to_entries[] | select(.value.actions != ["no-op"])] | length' <<<"$json")
+  if ((PLAN_OUTPUT_CHANGES > 0)); then
+    jq -r '.output_changes | to_entries[] | select(.value.actions != ["no-op"]) | "    \(.value.actions | join("/"))  output.\(.key)"' <<<"$json"
+  fi
+  PLAN_JSON="$json"
 }
 
 # Envs in the same account as testing share its GitHub OIDC provider.
@@ -671,12 +677,32 @@ org_caller_check() {
 
 # Moves each account in ou_account_ids into the OU, after a confirm. An
 # account already there is skipped. Nothing else moves.
+# Moves each account in ou_account_ids into the OU, one typed confirm
+# each. With "dry", reads the saved plan instead of state and only says
+# what would move. A plan with only output changes still has the new
+# list there, where state would be stale.
 org_move_accounts() {
-  local ou ids a parent
-  ou=$(tf_in "$ORG_DIR" .terraform output -raw ou_id)
-  ids=$(tf_in "$ORG_DIR" .terraform output -json ou_account_ids | jq -r '.[]')
+  local mode="${1:-}" ou ids a parent
+  if [[ "$mode" == dry ]]; then
+    ou=$(jq -r '.planned_values.outputs.ou_id.value // empty' <<<"$PLAN_JSON")
+    ids=$(jq -r '.planned_values.outputs.ou_account_ids.value // [] | .[]' <<<"$PLAN_JSON")
+  else
+    ou=$(tf_in "$ORG_DIR" .terraform output -raw ou_id)
+    ids=$(tf_in "$ORG_DIR" .terraform output -json ou_account_ids | jq -r '.[]')
+  fi
   if [[ -z "$ids" ]]; then
     info "ou_account_ids is empty. No account moved, so the new SCPs cover nothing yet."
+    return 0
+  fi
+  if [[ "$mode" == dry ]]; then
+    for a in $ids; do
+      parent=$(aws organizations list-parents --child-id "$a" --query 'Parents[0].Id' --output text)
+      if [[ -n "$ou" && "$parent" == "$ou" ]]; then
+        info "$a is already in $ou"
+      else
+        info "Would move $a from $parent into ${ou:-the new OU}"
+      fi
+    done
     return 0
   fi
   # SCPs only deny. Without an allow (FullAWSAccess, which AWS attaches to
@@ -724,11 +750,14 @@ cmd_org() {
 
   if ((DRY_RUN)); then
     rm -f "$ORG_DIR/$plan"
+    org_move_accounts dry
     info "Dry run: nothing applied, no account moved."
     return 0
   fi
 
-  if ((PLAN_CHANGES > 0)); then
+  # Output changes count too: ou_account_ids is an output, and the moves
+  # read it from state.
+  if ((PLAN_CHANGES + PLAN_OUTPUT_CHANGES > 0)); then
     confirm org "apply the org plan above"
     tf_in "$ORG_DIR" .terraform apply -input=false "$plan"
   else
