@@ -170,6 +170,11 @@ Set up from zero, from the repo root:
    one account, set each env's account and AWS profile in
    `terraform/accounts.hcl` (copy the `.example`). See
    [docs/adr/0001-account-per-env.md](docs/adr/0001-account-per-env.md).
+   Optional: `scripts/bootstrap.sh org` from the management account adds
+   a `migdemo` OU with SCPs (region lock, no leaving the org, no root user,
+   no IAM users or keys, security services stay on). No account moves
+   until you list it. Checks and steps in
+   [terraform/org/README.md](terraform/org/README.md).
 5. Deploy. Merging to main deploys testing. Then run `promote.yml` to
    stage, then to production (section 3).
 6. Tear down with `scripts/teardown.sh` (section 5).

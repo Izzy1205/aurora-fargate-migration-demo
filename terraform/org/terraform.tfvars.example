@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit account IDs.
+
+management_account_id = "REPLACE-ME"   # 12 digits, the organization's management account
+aws_profile           = "REPLACE-ME"   # CLI profile signed in to the management account
+owner                 = "REPLACE-ME"
+
+# allowed_regions = ["us-east-2"]
+
+# Set true only together with dr_copy_enabled = true in the env.hcl files.
+# A deny for that region in another SCP still wins.
+# dr_copy_enabled = false
+# dr_region       = "us-west-2"
+
+# Accounts to move into the OU. Empty means no account moves and the new
+# SCPs cover nothing yet. Add the testing account once the first apply looks
+# right and you've checked the items in terraform/org/README.md.
+ou_account_ids = []
+
+# Roles that skip the region lock, the IAM user deny and the security
+# service deny. Empty means no exception.
+# break_glass_role_names = ["OrganizationAccountAccessRole"]

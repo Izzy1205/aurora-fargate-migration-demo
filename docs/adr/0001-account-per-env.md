@@ -26,8 +26,8 @@ Done in three PRs:
 1. Account map (this one). Scripts and root.hcl learn which account each
    env is in and which AWS profile signs in to it. Nothing moves. All
    three envs still map to the one account.
-2. SCPs as code, applied in the org root. Guardrails like region lock and
-   no leaving the org.
+2. SCPs as code in terraform/org, attached to a new OU. Guardrails like
+   region lock and no leaving the org. See "PR 2: SCPs" below.
    https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
 3. Promotion across accounts. Copy the image by digest from the source
    account's ECR to the target's, with a repository policy on the source.
@@ -153,3 +153,28 @@ one state bucket and KMS key each (a KMS key is about $1 a month), and
 per account GuardDuty or Config if those get turned on. The env stacks
 already have their own network, so that part costs the same.
 Roughly the same bill as now plus a few dollars a month.
+
+## PR 2: SCPs
+
+`terraform/org` holds one new OU (`migdemo`) and five SCPs attached to it:
+no leaving the org, region lock, security services stay on, no IAM users
+or access keys, no root user. Details, sizes and the run steps are in
+[terraform/org/README.md](../../terraform/org/README.md).
+
+- Applied by hand from the management account
+  (`scripts/bootstrap.sh org`). The script stops unless the session is in
+  `management_account_id` and that account runs the org.
+- SCPs go on the new OU only, never the root or an existing OU. An org
+  that already has SCPs (one blocks us-west-2 today) keeps them as they
+  are. The plan only creates.
+- Accounts move into the OU only when listed in `ou_account_ids`, one
+  confirm each. Nothing moves by default. Moving an account changes its
+  SCPs, so it's a separate, deliberate step.
+- Local state. The only bucket is in the testing account, where CI roles
+  can read anything outside `bootstrap*`. Move it to a bucket in the
+  management account later if that account gets one.
+- The management account ID stays out of git, in the gitignored
+  `terraform/org/terraform.tfvars`.
+- SCPs don't apply to the management account, so nothing there changes.
+- DR copies to us-west-2 stay off. Turning them on needs `dr_copy_enabled`
+  here and the existing us-west-2 SCP changed.

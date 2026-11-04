@@ -31,7 +31,7 @@ trap 'rm -rf "$tmp"' EXIT
 export TF_PLUGIN_CACHE_DIR="$tmp/cache"
 mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-for d in bootstrap state-bucket; do
+for d in bootstrap state-bucket org; do
   info "$d"
   (cd "$TF/$d" && terraform providers lock -enable-plugin-cache "${args[@]}")
 done
