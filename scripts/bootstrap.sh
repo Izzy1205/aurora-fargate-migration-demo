@@ -9,6 +9,7 @@ set -euo pipefail
 
 BOOT_DIR="$REPO_ROOT/terraform/bootstrap"
 SB_DIR="$REPO_ROOT/terraform/state-bucket"
+ORG_DIR="$REPO_ROOT/terraform/org"
 LEGACY_TFVARS="$BOOT_DIR/terraform.tfvars"
 DEFAULT_KEY_PREFIX="aurora-fargate-migration-demo"
 SB_KEY="$DEFAULT_KEY_PREFIX/bootstrap-state-bucket.tfstate"
@@ -20,6 +21,7 @@ Usage:
   scripts/bootstrap.sh <testing|stage|production|all> [--no-github] [--dry-run]
   scripts/bootstrap.sh destroy <testing|stage|production> [--dry-run]
   scripts/bootstrap.sh state-bucket [testing|stage|production] [--dry-run]
+  scripts/bootstrap.sh org [--dry-run]
 
   testing|stage|production  Plan and apply terraform/bootstrap for that env,
                             then set its role ARNs on the GitHub environments.
@@ -33,6 +35,12 @@ Usage:
                             moves the state into the bucket. With an env
                             that has its own account, it works on that
                             account's bucket from state-bucket/<env>.tfvars.
+  org                       Plan and apply terraform/org (the demo OU and its
+                            SCPs) from the management account, then move the
+                            accounts in ou_account_ids into the OU, one
+                            confirm each. Stops unless the signed in account
+                            is management_account_id in
+                            terraform/org/terraform.tfvars.
 
 Options:
   --no-github   Don't write GitHub variables. Print the gh commands instead.
@@ -99,7 +107,7 @@ done
 is_env() { [[ "$1" == testing || "$1" == stage || "$1" == production ]]; }
 
 case "$TARGET" in
-  testing | stage | production | all) ;;
+  testing | stage | production | all | org) ;;
   state-bucket)
     [[ -z "$DESTROY_ENV" ]] || is_env "$DESTROY_ENV" || {
       usage >&2
@@ -646,11 +654,97 @@ cmd_state_bucket() {
   info "Done. Bucket: $bucket ($region)"
 }
 
+# ---- org ----
+
+# org_caller_check <management account>. Stops unless the session is in
+# that account and it is the organization's management account. SCPs never
+# apply to the management account, so a run from anywhere else is a mistake.
+org_caller_check() {
+  local want="$1" acct master
+  [[ "$want" =~ ^[0-9]{12}$ ]] || die "management_account_id in terraform/org/terraform.tfvars must be a 12 digit account ID."
+  acct=$(current_account) || die "No AWS session${AWS_PROFILE:+ for profile $AWS_PROFILE}."
+  [[ "$acct" == "$want" ]] || die "Signed in to $acct, but terraform/org runs from the management account $want. Set aws_profile in terraform/org/terraform.tfvars to a profile for $want."
+  master=$(aws organizations describe-organization --query Organization.MasterAccountId --output text 2>/dev/null) ||
+    die "Can't read the organization from $acct. Is it the management account, with organizations:DescribeOrganization?"
+  [[ "$master" == "$want" ]] || die "$acct is in an organization whose management account is $master, not $want."
+}
+
+# Moves each account in ou_account_ids into the OU, after a confirm. An
+# account already there is skipped. Nothing else moves.
+org_move_accounts() {
+  local ou ids a parent
+  ou=$(tf_in "$ORG_DIR" .terraform output -raw ou_id)
+  ids=$(tf_in "$ORG_DIR" .terraform output -json ou_account_ids | jq -r '.[]')
+  if [[ -z "$ids" ]]; then
+    info "ou_account_ids is empty. No account moved, so the new SCPs cover nothing yet."
+    return 0
+  fi
+  # SCPs only deny. Without an allow (FullAWSAccess, which AWS attaches to
+  # every new OU) an account in the OU could do nothing at all.
+  aws organizations list-policies-for-target --target-id "$ou" --filter SERVICE_CONTROL_POLICY --query 'Policies[].Id' --output text |
+    tr '\t' '\n' | grep -qx p-FullAWSAccess ||
+    die "$ou has no FullAWSAccess attached. Attach it (or an allow list of your own) before moving any account in."
+  for a in $ids; do
+    parent=$(aws organizations list-parents --child-id "$a" --query 'Parents[0].Id' --output text)
+    if [[ "$parent" == "$ou" ]]; then
+      info "$a is already in $ou"
+      continue
+    fi
+    info "$a is in $parent. Policies on it now:"
+    aws organizations list-policies-for-target --target-id "$parent" --filter SERVICE_CONTROL_POLICY --query 'Policies[].Name' --output text
+    warn "Moving $a to $ou drops the SCPs on $parent for it (root SCPs still apply) and adds the ones on $ou."
+    confirm move "move $a into $ou"
+    aws organizations move-account --account-id "$a" --source-parent-id "$parent" --destination-parent-id "$ou"
+    info "Moved $a into $ou"
+  done
+}
+
+cmd_org() {
+  local f="$ORG_DIR/terraform.tfvars" mgmt profile plan="org.tfplan"
+  NO_GITHUB=1
+  preflight_common
+  check_tfvars_file "$f"
+  mgmt=$(hcl_value management_account_id "$f")
+  profile=$(hcl_value aws_profile "$f")
+  if [[ -n "$profile" ]]; then
+    export AWS_PROFILE="$profile"
+  fi
+  ensure_session
+  org_caller_check "$mgmt"
+  info "Signed in to the management account $mgmt${AWS_PROFILE:+ (profile $AWS_PROFILE)}"
+
+  CLEANUP+=("$ORG_DIR/$plan")
+  tf_in "$ORG_DIR" .terraform init -input=false
+  info "[org] plan"
+  tf_in "$ORG_DIR" .terraform plan -input=false -out="$plan"
+  summarize_plan "$ORG_DIR" .terraform "$plan"
+  if ((PLAN_DELETES > 0)); then
+    warn "This plan destroys or replaces $PLAN_DELETES resource(s). Read the list above before you confirm."
+  fi
+
+  if ((DRY_RUN)); then
+    rm -f "$ORG_DIR/$plan"
+    info "Dry run: nothing applied, no account moved."
+    return 0
+  fi
+
+  if ((PLAN_CHANGES > 0)); then
+    confirm org "apply the org plan above"
+    tf_in "$ORG_DIR" .terraform apply -input=false "$plan"
+  else
+    info "No changes."
+  fi
+  rm -f "$ORG_DIR/$plan"
+  org_move_accounts
+  info "Done. State is in terraform/org/terraform.tfstate (gitignored). Keep a copy."
+}
+
 log_init "bootstrap-${TARGET}${DESTROY_ENV:+-$DESTROY_ENV}"
 ((DRY_RUN)) && info "Dry run"
 
 case "$TARGET" in
   destroy) cmd_destroy ;;
   state-bucket) cmd_state_bucket ;;
+  org) cmd_org ;;
   *) cmd_bootstrap ;;
 esac
