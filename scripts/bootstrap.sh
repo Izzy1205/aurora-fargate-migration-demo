@@ -19,7 +19,7 @@ usage() {
 Usage:
   scripts/bootstrap.sh <testing|stage|production|all> [--no-github] [--dry-run]
   scripts/bootstrap.sh destroy <testing|stage|production> [--dry-run]
-  scripts/bootstrap.sh state-bucket [--dry-run]
+  scripts/bootstrap.sh state-bucket [testing|stage|production] [--dry-run]
 
   testing|stage|production  Plan and apply terraform/bootstrap for that env,
                             then set its role ARNs on the GitHub environments.
@@ -30,7 +30,9 @@ Usage:
                             while stage or production still has a bootstrap.
   state-bucket              Plan and apply terraform/state-bucket. The first
                             run adopts an existing bucket or creates one, then
-                            moves the state into the bucket.
+                            moves the state into the bucket. With an env
+                            that has its own account, it works on that
+                            account's bucket from state-bucket/<env>.tfvars.
 
 Options:
   --no-github   Don't write GitHub variables. Print the gh commands instead.
@@ -39,10 +41,14 @@ Options:
 
 Before you run it:
   - Sign in to AWS (aws login). The script signs in if there's no session.
-  - The account comes from aws sts get-caller-identity and is shown in
-    the preflight. To pin it, set MIGDEMO_ACCOUNT_ID or expected_account_id
-    in terraform/state-bucket/terraform.tfvars. A pinned run stops on any
-    other account.
+  - Each env's account comes from terraform/accounts.hcl (copy
+    accounts.hcl.example), then MIGDEMO_<ENV>_ACCOUNT_ID, then the single
+    pin MIGDEMO_ACCOUNT_ID or expected_account_id in
+    terraform/state-bucket/terraform.tfvars. A run stops when the signed in
+    account isn't the env's account, and says which profile to use.
+  - <env>_aws_profile in accounts.hcl (or MIGDEMO_<ENV>_AWS_PROFILE) makes
+    the script switch AWS_PROFILE per env. all needs one for every env when
+    the envs are in more than one account, and stops otherwise.
   - Copy each *.tfvars.example to its tfvars and replace every REPLACE-ME.
       testing:    terraform/bootstrap/testing.tfvars
       stage:      terraform/bootstrap/stage.tfvars
@@ -79,7 +85,7 @@ while (($#)); do
     *)
       if [[ -z "$TARGET" ]]; then
         TARGET="$1"
-      elif [[ "$TARGET" == destroy && -z "$DESTROY_ENV" ]]; then
+      elif [[ "$TARGET" == destroy || "$TARGET" == state-bucket ]] && [[ -z "$DESTROY_ENV" ]]; then
         DESTROY_ENV="$1"
       else
         usage >&2
@@ -93,7 +99,13 @@ done
 is_env() { [[ "$1" == testing || "$1" == stage || "$1" == production ]]; }
 
 case "$TARGET" in
-  testing | stage | production | all | state-bucket) ;;
+  testing | stage | production | all) ;;
+  state-bucket)
+    [[ -z "$DESTROY_ENV" ]] || is_env "$DESTROY_ENV" || {
+      usage >&2
+      die "state-bucket takes testing, stage or production."
+    }
+    ;;
   destroy)
     is_env "$DESTROY_ENV" || {
       usage >&2
@@ -222,12 +234,23 @@ summarize_plan() {
   PLAN_CHANGES=$(jq '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' <<<"$json")
 }
 
+# Envs in the same account as testing share its GitHub OIDC provider.
+# With no accounts set they all match, same as before the account map.
+shares_testing_account() {
+  [[ "$(env_account "$1")" == "$(env_account testing)" ]]
+}
+
+# Switches to an env's profile and checks its account, once per change.
+switch_env() {
+  [[ "${CUR_ENV:-}" == "$1" ]] && return 0
+  use_env "$1"
+  CUR_ENV="$1"
+}
+
 preflight_common() {
   local tools=(aws terraform jq)
   ((NO_GITHUB)) || tools+=(gh)
   require_tools "${tools[@]}"
-  ensure_session
-  check_account
   if ((!NO_GITHUB)); then
     gh auth status >/dev/null 2>&1 || die "gh is not signed in. Run gh auth login, or use --no-github."
   fi
@@ -235,6 +258,7 @@ preflight_common() {
 
 preflight_env() {
   local env="$1" f got bucket oidc
+  switch_env "$env"
   f="$BOOT_DIR/$(env_tfvars "$env")"
   check_tfvars_file "$f"
   check_inherited "$env"
@@ -244,8 +268,14 @@ preflight_env() {
     die "${f#"$REPO_ROOT"/} sets environment = \"$got\", expected \"$env\"."
 
   oidc=$(hcl_raw create_github_oidc_provider "$f")
-  if [[ "$env" != testing && "$oidc" != false ]]; then
-    die "${f#"$REPO_ROOT"/} must set create_github_oidc_provider = false. Testing's bootstrap owns the provider."
+  if [[ "$env" != testing ]]; then
+    if shares_testing_account "$env"; then
+      [[ "$oidc" == false ]] ||
+        die "${f#"$REPO_ROOT"/} must set create_github_oidc_provider = false. $env is in testing's account and testing's bootstrap owns the provider."
+    else
+      [[ "$oidc" != false ]] ||
+        die "${f#"$REPO_ROOT"/} sets create_github_oidc_provider = false, but $env has its own account, which needs its own provider. Set it to true."
+    fi
   fi
 
   bucket=$(tfvar "$env" state_bucket_name)
@@ -264,6 +294,7 @@ kms_backend_args() {
 
 plan_env() {
   local env="$1" bucket key region data plan
+  switch_env "$env"
   bucket=$(tfvar "$env" state_bucket_name)
   key=$(env_state_key "$env")
   region="${TF_STATE_REGION:-$(tfvar "$env" aws_region us-east-2)}"
@@ -293,6 +324,7 @@ plan_env() {
 
 apply_env() {
   local env="$1" data=".terraform-$1" plan="bootstrap-$1.tfplan" planned="PLANNED_$1"
+  switch_env "$env"
   if [[ "${!planned:-1}" == 0 ]]; then
     info "[$env] no changes to apply"
   else
@@ -306,6 +338,7 @@ apply_env() {
 # environments, then reads them back.
 github_sync() {
   local env="$1" data=".terraform-$1" repo outputs gh_env name output value now
+  switch_env "$env"
   repo=$(tfvar "$env" github_repo)
   outputs=$(tf_in "$BOOT_DIR" "$data" output -json)
 
@@ -370,12 +403,23 @@ run_envs() {
   done
 }
 
+# True when some env other than testing reads testing's OIDC provider.
+any_shares_testing() {
+  local e
+  for e in stage production; do
+    shares_testing_account "$e" && return 0
+  done
+  return 1
+}
+
 cmd_bootstrap() {
   preflight_common
   migrate_legacy_tfvars
   case "$TARGET" in
     all)
-      if oidc_provider_exists; then
+      check_multi_account "${ENVS[@]}"
+      switch_env testing
+      if ! any_shares_testing || oidc_provider_exists; then
         run_envs all "${ENVS[@]}"
       else
         # Stage and production read the provider testing creates, so they
@@ -393,7 +437,10 @@ cmd_bootstrap() {
       run_envs testing testing
       ;;
     *)
-      oidc_provider_exists || die "No GitHub OIDC provider in this account. Run scripts/bootstrap.sh testing first."
+      if shares_testing_account "$TARGET"; then
+        switch_env "$TARGET"
+        oidc_provider_exists || die "No GitHub OIDC provider in this account. Run scripts/bootstrap.sh testing first."
+      fi
       run_envs "$TARGET" "$TARGET"
       ;;
   esac
@@ -421,6 +468,7 @@ cmd_destroy() {
 
   if [[ "$env" == testing ]]; then
     for other in stage production; do
+      shares_testing_account "$other" || continue
       if role_exists "$project-$other-github-plan"; then
         die "The $other bootstrap still exists and uses testing's OIDC provider. Destroy $other first."
       fi
@@ -498,10 +546,27 @@ EOF
   info "Wrote ${f#"$REPO_ROOT"/}"
 }
 
+# state-bucket [env]. With no env, or one in testing's account, this is
+# the one bucket in terraform/state-bucket/terraform.tfvars, same as before
+# the account map. An env with its own account gets its own bucket and key
+# from state-bucket/<env>.tfvars, with its own local data dir. Its state
+# key in its own bucket has the same name, since buckets don't overlap.
 cmd_state_bucket() {
+  local env="${DESTROY_ENV:-testing}"
   local f="$SB_DIR/terraform.tfvars" bucket region owner import=false mode data=".terraform" plan="state-bucket.tfplan"
+  local file_args=()
   NO_GITHUB=1
   preflight_common
+  if [[ "$env" != testing ]] && ! shares_testing_account "$env"; then
+    f="$SB_DIR/$env.tfvars"
+    data=".terraform-$env"
+    plan="state-bucket-$env.tfplan"
+    file_args=(-var-file="$env.tfvars")
+    SB_TFVARS="$f"
+    [[ -f "$f" ]] || die "$env has its own account. Copy terraform/state-bucket/terraform.tfvars.example to ${f#"$REPO_ROOT"/}, set expected_account_id to $(env_account "$env") and a new bucket_name, then run this again."
+    info "$env has its own account: bucket settings from ${f#"$REPO_ROOT"/}"
+  fi
+  use_env "$env"
   [[ -f "$f" ]] || write_state_bucket_tfvars "$f"
   check_tfvars_file "$f"
   bucket=$(hcl_value bucket_name "$f")
@@ -550,7 +615,7 @@ cmd_state_bucket() {
   fi
 
   info "[state-bucket] plan"
-  tf_in "$SB_DIR" "$data" plan -input=false -var="import_existing_bucket=$import" ${var_args[@]+"${var_args[@]}"} -out="$plan"
+  tf_in "$SB_DIR" "$data" plan -input=false ${file_args[@]+"${file_args[@]}"} -var="import_existing_bucket=$import" ${var_args[@]+"${var_args[@]}"} -out="$plan"
   summarize_plan "$SB_DIR" "$data" "$plan"
   if ((PLAN_DELETES > 0)); then
     warn "This plan destroys or replaces $PLAN_DELETES resource(s). Read the list above before you confirm."

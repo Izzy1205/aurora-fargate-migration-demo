@@ -248,6 +248,96 @@ check_account() {
   export ACCOUNT_ID
 }
 
+# Account map. terraform/accounts.hcl says which AWS account and, if you
+# want, which AWS CLI profile each env uses. It's gitignored like the
+# tfvars, see terraform/accounts.hcl.example. Region stays in env.hcl.
+ACCOUNTS_FILE="${ACCOUNTS_FILE:-$REPO_ROOT/terraform/accounts.hcl}"
+
+# MIGDEMO_TESTING_ACCOUNT_ID style name for an env.
+env_var_name() {
+  printf 'MIGDEMO_%s_%s\n' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" "$2"
+}
+
+# env_account <env>. MIGDEMO_<ENV>_ACCOUNT_ID, then <env>_account_id in
+# accounts.hcl, then the single pin (MIGDEMO_ACCOUNT_ID or
+# expected_account_id). Empty if none is set.
+env_account() {
+  local env="$1" var acct
+  var=$(env_var_name "$env" ACCOUNT_ID)
+  acct="${!var:-}"
+  if [[ -z "$acct" && -f "$ACCOUNTS_FILE" ]]; then
+    acct=$(hcl_value "${env}_account_id" "$ACCOUNTS_FILE")
+  fi
+  [[ "$acct" == *REPLACE-ME* ]] && acct=""
+  [[ -n "$acct" ]] || acct=$(expected_account)
+  printf '%s\n' "$acct"
+}
+
+# env_profile <env>. MIGDEMO_<ENV>_AWS_PROFILE, then <env>_aws_profile in
+# accounts.hcl. Empty means keep whatever AWS_PROFILE is already set.
+env_profile() {
+  local env="$1" var prof
+  var=$(env_var_name "$env" AWS_PROFILE)
+  prof="${!var:-}"
+  if [[ -z "$prof" && -f "$ACCOUNTS_FILE" ]]; then
+    prof=$(hcl_value "${env}_aws_profile" "$ACCOUNTS_FILE")
+  fi
+  [[ "$prof" == *REPLACE-ME* ]] && prof=""
+  printf '%s\n' "$prof"
+}
+
+# Distinct accounts across the given envs, one per line. Envs with no
+# account set count as "unset".
+accounts_for() {
+  local e a
+  for e in "$@"; do
+    a=$(env_account "$e")
+    printf '%s\n' "${a:-unset}"
+  done | sort -u
+}
+
+# Stops before a run over several envs that can't work: they are in more
+# than one account and at least one has no profile to switch to.
+check_multi_account() {
+  local e n no_prof=()
+  n=$(accounts_for "$@" | wc -l | tr -d ' ')
+  ((n > 1)) || return 0
+  for e in "$@"; do
+    [[ -n "$(env_profile "$e")" ]] || no_prof+=("$e")
+  done
+  ((${#no_prof[@]} == 0)) && return 0
+  die "These envs are in different accounts ($(accounts_for "$@" | paste -sd ' ' -)) and there is no profile for ${no_prof[*]}, so one session can't reach them all. Set <env>_aws_profile in terraform/accounts.hcl (or MIGDEMO_<ENV>_AWS_PROFILE), or run one env at a time."
+}
+
+# use_env <env>. Switches to the env's profile if it has one, signs in if
+# needed, and checks the account. Sets ACCOUNT_ID.
+use_env() {
+  local env="$1" prof want have
+  prof=$(env_profile "$env")
+  if [[ -n "$prof" && "${AWS_PROFILE:-}" != "$prof" ]]; then
+    export AWS_PROFILE="$prof"
+    info "$env: using AWS profile $prof"
+  fi
+  ensure_session
+  have=$(current_account) || die "Could not read the account from aws sts get-caller-identity."
+  [[ "$have" =~ ^[0-9]{12}$ ]] || die "aws sts get-caller-identity returned \"$have\", not an account ID."
+  want=$(env_account "$env")
+  if [[ -n "$want" ]]; then
+    [[ "$want" =~ ^[0-9]{12}$ ]] || die "Account for $env \"$want\" is not a 12 digit account ID. Check ${env}_account_id in terraform/accounts.hcl."
+    if [[ "$have" != "$want" ]]; then
+      if [[ -n "$prof" ]]; then
+        die "$env is in account $want but profile $prof signs in to $have. Fix the profile in ~/.aws/config or ${env}_account_id in terraform/accounts.hcl."
+      fi
+      die "$env is in account $want but you're signed in to $have${AWS_PROFILE:+ (profile $AWS_PROFILE)}. Use the profile for $want: export AWS_PROFILE=<profile>, or set ${env}_aws_profile in terraform/accounts.hcl."
+    fi
+    info "$env: account $have (matches)"
+  else
+    info "$env: account $have (no account set. Set ${env}_account_id in terraform/accounts.hcl to lock it.)"
+  fi
+  ACCOUNT_ID="$have"
+  export ACCOUNT_ID
+}
+
 # Tagged resources still up in an env, not counting the bootstrap's own
 # (ManagedBy=terraform-bootstrap) or IAM. The tag API can list a deleted
 # resource for a few minutes, so a hit here isn't proof alone.
@@ -271,9 +361,17 @@ ensure_session() {
 }
 
 # Sign in again. Use before a long run so the session doesn't expire midway.
+# A profile set up for Identity Center signs in with aws sso login, anything
+# else with aws login.
 session_refresh() {
-  info "Signing in with aws login"
-  aws login || die "aws login failed."
+  if [[ -n "${AWS_PROFILE:-}" ]] &&
+    { aws configure get sso_session >/dev/null 2>&1 || aws configure get sso_start_url >/dev/null 2>&1; }; then
+    info "Signing in with aws sso login (profile $AWS_PROFILE)"
+    aws sso login || die "aws sso login failed for profile $AWS_PROFILE."
+  else
+    info "Signing in with aws login${AWS_PROFILE:+ (profile $AWS_PROFILE)}"
+    aws login || die "aws login failed."
+  fi
   aws sts get-caller-identity >/dev/null 2>&1 || die "Still no AWS session after aws login."
 }
 

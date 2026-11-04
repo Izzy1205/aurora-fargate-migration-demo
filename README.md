@@ -166,7 +166,10 @@ Set up from zero, from the repo root:
    The account comes from `aws sts get-caller-identity`. To pin it, set
    `MIGDEMO_ACCOUNT_ID` or `expected_account_id` in
    `terraform/state-bucket/terraform.tfvars` (the generated file sets
-   it). A pinned run stops on any other account.
+   it). A pinned run stops on any other account. With envs in more than
+   one account, set each env's account and AWS profile in
+   `terraform/accounts.hcl` (copy the `.example`). See
+   [docs/adr/0001-account-per-env.md](docs/adr/0001-account-per-env.md).
 5. Deploy. Merging to main deploys testing. Then run `promote.yml` to
    stage, then to production (section 3).
 6. Tear down with `scripts/teardown.sh` (section 5).
@@ -799,3 +802,4 @@ Platform:
 - Scan images again at promotion. Today promotion copies the digest
   Trivy scanned in testing and doesn't scan again.
 - A separate AWS account per env. All three share one account today.
+  Plan and steps in [docs/adr/0001-account-per-env.md](docs/adr/0001-account-per-env.md).

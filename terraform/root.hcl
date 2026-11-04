@@ -24,6 +24,15 @@ locals {
   kms_env     = get_env("TF_STATE_KMS_KEY", "unset")
   kms_default = local.sb_use_kms ? "alias/${local.project}-tfstate" : ""
   kms_key_id  = local.kms_env == "unset" ? local.kms_default : local.kms_env
+
+  # Account map, terraform/accounts.hcl (gitignored, see the .example). It
+  # only adds a guard: with <env>_account_id set, the provider refuses any
+  # other account. CI has no copy, and there the role ARN in each GitHub
+  # environment already picks the account. try() covers a missing file.
+  # Nothing here feeds remote_state, so the backend is the same either way.
+  accounts   = try(read_terragrunt_config("${dirname(find_in_parent_folders("root.hcl"))}/accounts.hcl").locals, {})
+  account_id = trimspace(get_env("MIGDEMO_${upper(local.environment)}_ACCOUNT_ID", try(local.accounts["${local.environment}_account_id"], "")))
+  allowed    = can(regex("^[0-9]{12}$", local.account_id)) ? "\n  allowed_account_ids = [\"${local.account_id}\"]" : ""
 }
 
 # One state object per unit:
@@ -71,7 +80,7 @@ generate "provider" {
   if_exists = "overwrite_terragrunt"
   contents  = <<-EOT
     provider "aws" {
-      region = "${local.aws_region}"
+      region = "${local.aws_region}"${local.allowed}
 
       default_tags {
         tags = {

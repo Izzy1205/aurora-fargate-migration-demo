@@ -17,8 +17,7 @@ export TF_STATE_BUCKET=example-tfstate TF_STATE_REGION=us-east-2 TF_STATE_KMS_KE
 # No logging, tools, sign in or account checks here.
 log_init() { :; }
 require_tools() { :; }
-ensure_session() { :; }
-check_account() { :; }
+use_env() { :; }
 
 # Objects and their encryption. A copy is logged to $tmp/copies.
 aws() {

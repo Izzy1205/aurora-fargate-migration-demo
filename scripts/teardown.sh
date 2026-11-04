@@ -42,11 +42,17 @@ One run does:
     Exits non-zero if anything is.
 
 Values the units need, read from the environment first:
-  TF_STATE_BUCKET            else state_bucket_name in terraform/bootstrap/testing.tfvars
+  TF_STATE_BUCKET            else state_bucket_name in terraform/bootstrap/<env>.tfvars,
+                             then testing.tfvars
   MIGDEMO_OWNER              else owner in terraform/bootstrap/testing.tfvars
   MIGDEMO_BUDGET_EMAIL       else the BUDGET_EMAIL repo variable (gh)
   MIGDEMO_ALB_INGRESS_CIDRS  else the ALB_INGRESS_CIDRS repo variable (gh)
   MIGDEMO_ACCOUNT_ID         optional account pin, same as bootstrap.sh
+
+Accounts and profiles per env come from terraform/accounts.hcl, same as
+bootstrap.sh. Each env is checked against its own account, and with
+<env>_aws_profile set the script switches AWS_PROFILE per env. all stops up
+front when the envs are in more than one account and one has no profile.
 
 The bootstrap (CI roles) and the state bucket stay. To retire an env for
 good, run scripts/bootstrap.sh destroy <env> after this.
@@ -193,6 +199,29 @@ resolve_inputs() {
   export TG_NON_INTERACTIVE=true
 }
 
+# Bucket for an env's state: TF_STATE_BUCKET if it was set before the run,
+# then state_bucket_name in that env's bootstrap tfvars, then the one
+# resolve_inputs found (DEFAULT_BUCKET). Today every env names the same bucket.
+env_bucket() {
+  local f="$REPO_ROOT/terraform/bootstrap/$1.tfvars" bkt=""
+  if [[ -n "$USER_BUCKET" ]]; then
+    printf '%s\n' "$USER_BUCKET"
+    return 0
+  fi
+  [[ -f "$f" ]] && bkt=$(hcl_value state_bucket_name "$f")
+  [[ -n "$bkt" && "$bkt" != *REPLACE-ME* ]] || bkt="$DEFAULT_BUCKET"
+  printf '%s\n' "$bkt"
+}
+
+# Switches to an env: its profile, its account check, its state bucket.
+enter_env() {
+  [[ "${CUR_ENV:-}" == "$1" ]] && return 0
+  use_env "$1"
+  TF_STATE_BUCKET=$(env_bucket "$1")
+  export TF_STATE_BUCKET
+  CUR_ENV="$1"
+}
+
 # Checks the session before each unit. If it ran out, sign in again and
 # make sure it's still the same account before going on.
 session_check() {
@@ -202,7 +231,7 @@ session_check() {
     session_refresh
   fi
   have=$(current_account) || die "Could not read the account before $1."
-  [[ "$have" == "$ACCOUNT_ID" ]] || die "Now signed in to account $have, started in $ACCOUNT_ID. Stopped before $1."
+  [[ "$have" == "$ACCOUNT_ID" ]] || die "Now signed in to account $have, started in $ACCOUNT_ID${AWS_PROFILE:+ (profile $AWS_PROFILE)}. Stopped before $1."
 }
 
 plan_file() { printf '%s\n' "$(env_dir "$1")/$2.destroy.tfplan"; }
@@ -460,14 +489,22 @@ log_init "teardown-$TARGET"
 ((DRY_RUN)) && info "Dry run"
 
 require_tools aws terraform terragrunt jq
+check_multi_account "${TARGETS[@]}"
+first_profile=$(env_profile "${TARGETS[0]}")
+[[ -z "$first_profile" ]] || export AWS_PROFILE="$first_profile"
 if ((DRY_RUN)); then
   ensure_session
 else
   # Fresh sign-in so the session lasts the whole run.
   session_refresh
 fi
-check_account
+USER_BUCKET="${TF_STATE_BUCKET:-}"
+use_env "${TARGETS[0]}"
+CUR_ENV="${TARGETS[0]}"
 resolve_inputs
+DEFAULT_BUCKET="$TF_STATE_BUCKET"
+TF_STATE_BUCKET=$(env_bucket "${TARGETS[0]}")
+export TF_STATE_BUCKET
 PROJECT=$(resolve_project)
 
 # Preflight: what's up where.
@@ -476,6 +513,7 @@ info "Preflight"
 printf '  %-11s %-13s %-10s %s\n' env account region "tagged resources"
 for env in "${TARGETS[@]}"; do
   [[ -f "$(env_dir "$env")/env.hcl" ]] || die "No terraform/environments/$env/env.hcl"
+  enter_env "$env"
   region=$(env_region "$env")
   n=$(env_count "$env")
   printf '  %-11s %-13s %-10s %s\n' "$env" "$ACCOUNT_ID" "$region" "$n"
@@ -485,13 +523,14 @@ for env in "${TARGETS[@]}"; do
     info "[$env] nothing tagged Project=$PROJECT Environment=$env, skipping."
   fi
 done
-info "State bucket: $TF_STATE_BUCKET (not touched)"
+for env in "${TARGETS[@]}"; do info "[$env] state bucket: $(env_bucket "$env") (not touched)"; done
 
 ((${#RUN[@]} > 0)) || die "Nothing to tear down. Wrong account or region? Tags can also lag a few minutes after a teardown."
 
 # A single env going away strands anything that promotes from it.
 if [[ "$TARGET" != all ]]; then
   for down in $(downstream_of "$TARGET"); do
+    enter_env "$down"
     n=$(env_count "$down")
     if ((n > 0)); then
       warn "$down is still up ($n tagged resources) and promotes from $TARGET. Tearing down $TARGET strands it: nothing can be promoted to $down until $TARGET is deployed again. Tear down $down first, or use all."
@@ -502,6 +541,7 @@ fi
 SUMMARIES=()
 APPLY=()
 for env in "${RUN[@]}"; do
+  enter_env "$env"
   for unit in "${UNITS[@]}"; do
     session_check "$env/$unit plan"
     plan_unit "$env" "$unit"
@@ -512,6 +552,7 @@ info "Summary"
 printf '%s\n' "${SUMMARIES[@]}"
 
 for env in "${RUN[@]}"; do
+  enter_env "$env"
   # Listed only. A real run stops them right before the data unit.
   show_backup_jobs "$env" || ((DRY_RUN)) || info "[$env] these get stopped before data is destroyed."
 done
@@ -524,6 +565,7 @@ fi
 confirm "$TARGET" "destroy everything planned above in: ${RUN[*]}"
 
 for env in "${RUN[@]}"; do
+  enter_env "$env"
   for unit in "${UNITS[@]}"; do
     if [[ " ${APPLY[*]-} " == *" $env/$unit "* ]]; then
       # Checked here, not up front, so a job that starts while app goes
