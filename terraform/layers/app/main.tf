@@ -19,7 +19,8 @@ locals {
 module "registry" {
   source = "../../modules/registry"
 
-  name_prefix = local.name_prefix
+  name_prefix     = local.name_prefix
+  pull_principals = var.ecr_pull_principals
 }
 
 module "ecs" {

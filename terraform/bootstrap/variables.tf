@@ -97,3 +97,15 @@ variable "github_subject_prefixes" {
   type        = list(string)
   default     = []
 }
+
+variable "promote_from_account_id" {
+  description = "Account ID of the env this one promotes images from. Empty means this account. Set in tfvars when stage/production leave the shared account."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.promote_from_account_id == "" || can(regex("^[0-9]{12}$", var.promote_from_account_id))
+    error_message = "promote_from_account_id must be empty or a 12 digit account ID."
+  }
+}
+

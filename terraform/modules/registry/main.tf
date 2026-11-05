@@ -33,3 +33,29 @@ resource "aws_ecr_lifecycle_policy" "this" {
     }]
   })
 }
+
+
+locals {
+  # Empty list: no policy resource. Same-account promote keeps using IAM only.
+  pull_policy = length(var.pull_principals) == 0 ? null : jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "CrossAccountPull"
+      Effect    = "Allow"
+      Principal = { AWS = var.pull_principals }
+      Action = [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:DescribeImages",
+      ]
+    }]
+  })
+}
+
+resource "aws_ecr_repository_policy" "pull" {
+  for_each = local.pull_policy == null ? {} : aws_ecr_repository.this
+
+  repository = each.value.name
+  policy     = local.pull_policy
+}

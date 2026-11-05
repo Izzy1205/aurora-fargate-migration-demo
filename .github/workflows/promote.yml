@@ -6,7 +6,8 @@ name: promote
 # in deploy.yml) is copied into the target env's repos under the same commit
 # SHA tag, the copy is checked to have the identical digest, and every task
 # definition points at repo@sha256:<digest>. The SHA tag is shown alongside
-# for people.
+# for people. Resolve reads the source account; the copy logs into both
+# registry URIs so the same flow works when stage and production move.
 #
 # A commit can only be promoted if it is on main and is what the source env's
 # app service is running right now, so production only ever gets what ran in
@@ -115,13 +116,15 @@ jobs:
           done
           echo "Promoting \`$SHA\` ($(git log -1 --format=%s "$SHA"))" >> "$GITHUB_STEP_SUMMARY"
 
-  # Read only, with the target's plan role (ReadOnlyAccess). Fails before any
-  # target plan if the commit's images aren't what the source env runs.
+  # Read only, with the SOURCE env's plan role (ReadOnlyAccess). Runs in the
+  # source GitHub environment so ECR and ECS reads stay in that account when
+  # envs split. Fails before any target plan if the commit's images aren't
+  # what the source env runs.
   resolve:
     name: resolve source digests
     needs: [setup]
     runs-on: ubuntu-latest
-    environment: ${{ needs.setup.outputs.target }}-infra-plan
+    environment: ${{ needs.setup.outputs.source }}-infra-plan
     permissions:
       contents: read
       id-token: write
@@ -133,6 +136,8 @@ jobs:
     outputs:
       app_digest: ${{ steps.src.outputs.app_digest }}
       migrate_digest: ${{ steps.src.outputs.migrate_digest }}
+      source_registry: ${{ steps.src.outputs.source_registry }}
+      source_account: ${{ steps.src.outputs.source_account }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,7 +146,7 @@ jobs:
       - uses: ./.github/actions/check-role
         with:
           role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          env: ${{ needs.setup.outputs.target }}
+          env: ${{ needs.setup.outputs.source }}
           kind: plan
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -192,9 +197,12 @@ jobs:
           {
             echo "app_digest=$app_digest"
             echo "migrate_digest=$migrate_digest"
+            echo "source_registry=$registry"
+            echo "source_account=$account"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Promoting ${SHA::7}: ${SOURCE} -> ${TARGET}"
+            echo "- source registry: \`$registry\`"
             echo "- app: \`$p/app:$SHA\` = \`$app_digest\` (live in $SOURCE)"
             echo "- migrate: \`$p/migrate:$SHA\` = \`$migrate_digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -239,24 +247,34 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: gha-promote-${{ github.run_id }}
 
-      - name: ECR login
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
-
       # skopeo copies the manifest byte for byte (--preserve-digests fails
       # rather than rewrite it), so the target digest is the scanned one.
-      # Source and target repos are in the same registry, so the one ECR
-      # login above covers both. skopeo ships on GitHub's Ubuntu runners.
+      # Login both registry URIs with the target deploy role token. Today
+      # source and target are the same account, so the URIs match. When they
+      # split, the same token works for the source registry once that
+      # account's repo policy allows this role to pull
+      # (docs.aws.amazon.com/AmazonECR/latest/userguide/registry_auth.html).
+      # skopeo ships on GitHub's Ubuntu runners.
       - name: copy images by digest
         id: copy
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SRC_REGISTRY: ${{ needs.resolve.outputs.source_registry }}
           APP_REPO: ${{ needs.infra.outputs.app_repo }}
           MIGRATION_REPO: ${{ needs.infra.outputs.migration_repo }}
           APP_DIGEST: ${{ needs.resolve.outputs.app_digest }}
           MIGRATE_DIGEST: ${{ needs.resolve.outputs.migrate_digest }}
         run: |
           command -v skopeo >/dev/null || { echo "::error::skopeo not on this runner" >&2; exit 1; }
+          account=$(aws sts get-caller-identity --query Account --output text)
+          dst_registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          src_registry="$SRC_REGISTRY"
+          [[ -n "$src_registry" ]] || { echo "::error::source_registry missing from resolve" >&2; exit 1; }
+          password=$(aws ecr get-login-password --region "$AWS_REGION") || {
+            echo "::error::ecr get-login-password failed" >&2; exit 1; }
+          # Same password against each URI. No-op second login when accounts match.
+          printf '%s' "$password" | skopeo login --username AWS --password-stdin "$src_registry"
+          printf '%s' "$password" | skopeo login --username AWS --password-stdin "$dst_registry"
           src="${PROJECT}-${SOURCE}"
           tag_digest() {
             aws ecr describe-images --repository-name "$1" --image-ids imageTag="$SHA" \
@@ -274,7 +292,7 @@ jobs:
               return
             fi
             skopeo copy --all --preserve-digests --retry-times 3 \
-              "docker://$REGISTRY/$src_repo@$digest" "docker://$REGISTRY/$dst_repo:$SHA"
+              "docker://$src_registry/$src_repo@$digest" "docker://$dst_registry/$dst_repo:$SHA"
             have=$(tag_digest "$dst_repo")
             if [[ "$have" != "$digest" ]]; then
               echo "::error::copied $dst_repo:$SHA is $have, expected $digest" >&2; return 1
@@ -283,11 +301,13 @@ jobs:
           copy_once "$src/app" "$APP_REPO" "$APP_DIGEST"
           copy_once "$src/migrate" "$MIGRATION_REPO" "$MIGRATE_DIGEST"
           {
-            echo "app_image=$REGISTRY/$APP_REPO@$APP_DIGEST"
-            echo "migrate_image=$REGISTRY/$MIGRATION_REPO@$MIGRATE_DIGEST"
+            echo "app_image=$dst_registry/$APP_REPO@$APP_DIGEST"
+            echo "migrate_image=$dst_registry/$MIGRATION_REPO@$MIGRATE_DIGEST"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Images in ${TARGET} for ${SHA::7}"
+            echo "- source registry: \`$src_registry\`"
+            echo "- target registry: \`$dst_registry\`"
             echo "- app: \`$APP_REPO:$SHA\` = \`$APP_DIGEST\` (same digest as $SOURCE)"
             echo "- migrate: \`$MIGRATION_REPO:$SHA\` = \`$MIGRATE_DIGEST\` (same digest as $SOURCE)"
           } >> "$GITHUB_STEP_SUMMARY"
