@@ -16,3 +16,7 @@ github_app_environment   = "stage-app"
 
 # Same value as testing's tfvars, if testing needed it.
 # github_subject_prefixes = ["repo:OWNER@OWNER_ID/NAME@REPO_ID"]
+
+# Account that holds the source ECR repos. Leave unset while every env
+# shares one account. Set to the source env's 12 digit id after it moves.
+# promote_from_account_id = "111111111111"

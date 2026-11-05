@@ -60,14 +60,13 @@ locals {
 
   # Promotion source (stage pulls from testing, production from stage).
   # Read only: the deploy role copies the scanned image by digest from the
-  # source env's repos into its own, and checks the source service runs it.
-  promote_from = var.promote_from_prefix
+  # source env's repos into its own. The running-service check lives in
+  # promote.yml resolve, under the source plan role.
+  promote_from         = var.promote_from_prefix
+  promote_from_account = var.promote_from_account_id != "" ? var.promote_from_account_id : local.account
   promote_source_repo_arns = local.promote_from == "" ? [] : [
-    for r in ["app", "migrate"] : "arn:${local.part}:ecr:${local.region}:${local.account}:repository/${local.promote_from}/${r}"
-  ]
-  promote_source_service_arns = local.promote_from == "" ? [] : [
-    for s in ["app", "ssn-vault"] :
-    "arn:${local.part}:ecs:${local.region}:${local.account}:service/${local.promote_from}-cluster/${local.promote_from}-${s}"
+    for r in ["app", "migrate"] :
+    "arn:${local.part}:ecr:${local.region}:${local.promote_from_account}:repository/${local.promote_from}/${r}"
   ]
 }
 

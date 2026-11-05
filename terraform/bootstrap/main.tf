@@ -36,6 +36,8 @@ module "github_oidc" {
     stage      = "${var.project}-testing"
     production = "${var.project}-stage"
   }[var.environment]
+  # Empty: source repos are in this account. Set when the source env moves.
+  promote_from_account_id = var.promote_from_account_id
 }
 
 output "plan_role_arn" {

@@ -87,3 +87,15 @@ variable "promote_from_prefix" {
     error_message = "Use an empty string or <project>-testing / <project>-stage."
   }
 }
+
+variable "promote_from_account_id" {
+  description = "Account that holds promote_from_prefix ECR repos. Empty means this account (same-account promote). Set when the source env lives elsewhere."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.promote_from_account_id == "" || can(regex("^[0-9]{12}$", var.promote_from_account_id))
+    error_message = "promote_from_account_id must be empty or a 12 digit account ID."
+  }
+}
+

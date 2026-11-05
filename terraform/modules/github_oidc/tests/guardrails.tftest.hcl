@@ -224,10 +224,23 @@ run "production_peers" {
     error_message = "Production must deny stage and testing secrets."
   }
 
-  # Promotion still reads the source env's ECR repos and service.
+  # Promotion still pulls the source env's ECR repos (same account by default).
   assert {
     condition     = contains([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Sid], "PromotionSourcePull")
     error_message = "Promotion pull must stay."
+  }
+
+  assert {
+    condition = alltrue([
+      for r in [for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "PromotionSourcePull"][0] :
+      startswith(r, "arn:aws:ecr:us-east-2:111111111111:repository/migdemo-stage/")
+    ])
+    error_message = "Default promote source ARNs must stay in this account."
+  }
+
+  assert {
+    condition     = !contains([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Sid], "PromotionSourceServiceRead")
+    error_message = "Service read moved to promote.yml resolve under the source plan role."
   }
 
   assert {
@@ -236,6 +249,31 @@ run "production_peers" {
       can(regex("^migdemo-[^/]+-github-[^/]+$", n))
     ])
     error_message = "CI role names must match migdemo-*-github-*, the pattern the state bucket and key policies deny."
+  }
+}
+
+run "promote_cross_account" {
+  command = plan
+
+  variables {
+    name_prefix             = "migdemo-production"
+    environment             = "production"
+    plan_environment        = "production-infra-plan"
+    infra_environment       = "production-infra"
+    app_environment         = "production-app"
+    state_key_prefix        = "aurora-fargate-migration-demo/production"
+    trust_pull_request      = false
+    promote_from_prefix     = "migdemo-stage"
+    promote_from_account_id = "222222222222"
+    create_oidc_provider    = true
+  }
+
+  assert {
+    condition = alltrue([
+      for r in [for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "PromotionSourcePull"][0] :
+      startswith(r, "arn:aws:ecr:us-east-2:222222222222:repository/migdemo-stage/")
+    ])
+    error_message = "promote_from_account_id must win over the local account in source ECR ARNs."
   }
 }
 

@@ -348,6 +348,7 @@ data "aws_iam_policy_document" "deploy" {
   }
 
   # Promotion only. Pull the source env's image by digest, never push to it.
+  # Source account comes from promote_from_account_id (defaults to this one).
   dynamic "statement" {
     for_each = local.promote_from == "" ? [] : [1]
     content {
@@ -357,16 +358,6 @@ data "aws_iam_policy_document" "deploy" {
         "ecr:BatchCheckLayerAvailability", "ecr:DescribeImages",
       ]
       resources = local.promote_source_repo_arns
-    }
-  }
-
-  # Promotion only. Check the source env is running the digest being promoted.
-  dynamic "statement" {
-    for_each = local.promote_from == "" ? [] : [1]
-    content {
-      sid       = "PromotionSourceServiceRead"
-      actions   = ["ecs:DescribeServices"]
-      resources = local.promote_source_service_arns
     }
   }
 }

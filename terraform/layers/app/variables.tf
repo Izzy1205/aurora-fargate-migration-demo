@@ -155,3 +155,9 @@ variable "payment_max_receive_count" {
   type        = number
   default     = 5
 }
+
+variable "ecr_pull_principals" {
+  description = "Principals granted pull on this env's ECR repos (cross-account promote). Empty leaves no repository policy."
+  type        = list(string)
+  default     = []
+}

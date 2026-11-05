@@ -1,6 +1,6 @@
 # 0001. One AWS account per env
 
-Status: accepted. Step 1 of 3 is in (the account map). No accounts moved yet.
+Status: accepted. Steps 1 and 2 are in. PR 3 (this one) hardens promote for a later split. No accounts moved yet.
 
 ## Context
 
@@ -117,8 +117,8 @@ new account: deploy it from scratch, don't copy state across.
     useful against non migdemo services, keep it.
   - `deny_state_key_outside_s3` and the SSN vault denies are within one
     env, they stay.
-- Promotion has to cross accounts (PR 3). Today it copies inside one
-  registry.
+- Promotion crosses accounts once an env moves. Same-account promote
+  still works; see "PR 3: ECR promote" below.
 - More to sign in to. Identity Center profiles per account cover it.
 - Budgets become per account, which is more useful than one shared one.
 
@@ -178,3 +178,27 @@ or access keys, no root user. Details, sizes and the run steps are in
 - SCPs don't apply to the management account, so nothing there changes.
 - DR copies to us-west-2 stay off. Turning them on needs `dr_copy_enabled`
   here and the existing us-west-2 SCP changed.
+
+## PR 3: ECR promote
+
+Promote still copies by digest. Changes so the same workflow works when
+the source and target live in different accounts:
+
+- `resolve` runs in the source GitHub environment and assumes that env's
+  plan role. ECR and ECS reads stay in the source account. The target
+  deploy role no longer needs `ecs:DescribeServices` on the source.
+- The copy logs into both registry URIs with the target deploy role, then
+  `skopeo copy --all --preserve-digests` from `src@digest` to `dst:SHA`.
+  Same account today means both URIs match. When they differ, the source
+  repo policy must allow the target deploy role to pull.
+- `promote_from_account_id` on the github_oidc module (empty = this
+  account) sets the account id in the PromotionSourcePull ECR ARNs.
+  Bootstrap passes it through from tfvars.
+- `modules/registry` takes optional `pull_principals`. Empty (the default)
+  creates no repository policy, so applying today changes nothing. Set
+  the target deploy role ARN on the source env when that env moves.
+
+Hand apply bootstrap (and the app layer if you set pull principals) after
+merge. Merge with `[skip ci]` in the squash title: `modules/registry` is
+not in deploy.yml paths-ignore, and an empty pull_principals apply is a
+no-op for the policy either way.
