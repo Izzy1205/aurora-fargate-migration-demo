@@ -256,16 +256,16 @@ run "promote_cross_account" {
   command = plan
 
   variables {
-    name_prefix              = "migdemo-production"
-    environment              = "production"
-    plan_environment         = "production-infra-plan"
-    infra_environment        = "production-infra"
-    app_environment          = "production-app"
-    state_key_prefix         = "aurora-fargate-migration-demo/production"
-    trust_pull_request       = false
-    promote_from_prefix      = "migdemo-stage"
-    promote_from_account_id  = "222222222222"
-    create_oidc_provider     = true
+    name_prefix             = "migdemo-production"
+    environment             = "production"
+    plan_environment        = "production-infra-plan"
+    infra_environment       = "production-infra"
+    app_environment         = "production-app"
+    state_key_prefix        = "aurora-fargate-migration-demo/production"
+    trust_pull_request      = false
+    promote_from_prefix     = "migdemo-stage"
+    promote_from_account_id = "222222222222"
+    create_oidc_provider    = true
   }
 
   assert {
