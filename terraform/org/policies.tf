@@ -19,10 +19,12 @@ locals {
   # These are global services, or calls that only go to us-east-1, so they
   # stay open in every region. kms:* is in the AWS list but left out here:
   # KMS is regional and every key this repo makes is in an allowed region,
-  # so keys elsewhere stay blocked.
+  # so keys elsewhere stay blocked. cloudfront-keyvaluestore is added since
+  # its data plane is global and the dev password gate writes to it.
   global_actions = [
     "a4b:*", "acm:*", "aws-marketplace-management:*", "aws-marketplace:*",
-    "aws-portal:*", "budgets:*", "ce:*", "chime:*", "cloudfront:*", "config:*",
+    "aws-portal:*", "budgets:*", "ce:*", "chime:*", "cloudfront:*",
+    "cloudfront-keyvaluestore:*", "config:*",
     "cur:*", "directconnect:*", "ec2:DescribeRegions",
     "ec2:DescribeTransitGateways", "ec2:DescribeVpnGateways", "fms:*",
     "globalaccelerator:*", "health:*", "iam:*", "importexport:*",
