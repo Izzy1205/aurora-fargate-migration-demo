@@ -81,6 +81,11 @@ run "defaults" {
   }
 
   assert {
+    condition     = jsondecode(local.scp_json["region-lock"]).Statement[0].Condition.StringNotEquals["kms:ViaService"] == ["acm.us-east-1.amazonaws.com"]
+    error_message = "The region lock may exempt only ACM KMS calls in us-east-1."
+  }
+
+  assert {
     condition     = !can(jsondecode(local.scp_json["region-lock"]).Statement[0].Condition.ArnNotLike)
     error_message = "No break glass exception unless one is set."
   }
@@ -123,6 +128,11 @@ run "dr_region_and_break_glass" {
   assert {
     condition     = jsondecode(local.scp_json["region-lock"]).Statement[0].Condition.ArnNotLike["aws:PrincipalArn"] == ["arn:aws:iam::*:role/BreakGlass"]
     error_message = "The break glass role must skip the region lock."
+  }
+
+  assert {
+    condition     = jsondecode(local.scp_json["region-lock"]).Statement[0].Condition.StringNotEquals["kms:ViaService"] == ["acm.us-east-1.amazonaws.com"]
+    error_message = "Break glass must not replace the ACM ViaService exemption."
   }
 
   assert {
