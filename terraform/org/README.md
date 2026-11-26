@@ -21,7 +21,7 @@ for this OU's. An account sitting right under the root loses nothing.
 | SCP | Size | Denies |
 | --- | --- | --- |
 | `migdemo-deny-leave-org` | 137 | `organizations:LeaveOrganization` |
-| `migdemo-region-lock` | 889 (901 with the DR region) | every call outside `allowed_regions` (plus `dr_region` when `dr_copy_enabled`), except global services |
+| `migdemo-region-lock` | 967 (979 with the DR region) | every call outside `allowed_regions` (plus `dr_region` when `dr_copy_enabled`), except global services |
 | `migdemo-protect-security-services` | 699 | turning off or deleting CloudTrail trails, GuardDuty detectors, Config recorders and delivery channels, Access Analyzer analyzers, Security Hub, and cutting GuardDuty or Security Hub from its admin |
 | `migdemo-deny-iam-users` | 149 | `iam:CreateUser`, `iam:CreateAccessKey` |
 | `migdemo-deny-root-user` | 239 | everything by the member account root user, except the three bucket policy calls |
@@ -43,7 +43,15 @@ https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_
 
 - The global list is the AWS example list minus `kms:*`. KMS is regional
   and every key here is in us-east-2, so keys in other regions stay
-  blocked.
+  blocked. ACM RequestCertificate in us-east-1 calls `kms:DescribeKey` on
+  `alias/aws/acm` through a forward access session, which would also be
+  denied. The region-lock condition therefore also requires
+  `kms:ViaService` to be something other than `acm.us-east-1.amazonaws.com`.
+  Both keys are in one `StringNotEquals` block, so they are ANDed. When
+  `kms:ViaService` is absent, `StringNotEquals` is true and the region
+  lock still applies:
+  https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html
+  This is not an opening of `kms:*`.
 - `iam`, `sts`, `organizations`, `support`, `cloudfront`, `waf`, `wafv2`,
   `route53`, `budgets`, `ce`, `health` and `acm` stay open. GitHub OIDC is
   `sts:AssumeRoleWithWebIdentity`, so it's open too.
