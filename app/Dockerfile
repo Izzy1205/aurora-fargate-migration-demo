@@ -16,9 +16,9 @@ ENV PATH=/venv/bin:$PATH \
     PYTHONPATH=/srv/src \
     APP_VERSION=${APP_VERSION} \
     PORT=8000
-# pull in the patched zlib1g until the base image catches up
+# pull in patched zlib1g and libzstd1 until the base image catches up
 RUN apt-get update \
- && apt-get install -y --only-upgrade zlib1g \
+ && apt-get install -y --only-upgrade zlib1g libzstd1 \
  && rm -rf /var/lib/apt/lists/*
 # Same for the base image's pip. /venv isn't copied yet, so this is the
 # system Python.
