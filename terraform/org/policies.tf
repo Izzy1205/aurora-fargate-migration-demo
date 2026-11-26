@@ -19,8 +19,12 @@ locals {
   # These are global services, or calls that only go to us-east-1, so they
   # stay open in every region. kms:* is in the AWS list but left out here:
   # KMS is regional and every key this repo makes is in an allowed region,
-  # so keys elsewhere stay blocked. cloudfront-keyvaluestore is added since
-  # its data plane is global and the dev password gate writes to it.
+  # so keys elsewhere stay blocked. ACM RequestCertificate in us-east-1
+  # still needs kms:DescribeKey on alias/aws/acm through a forward access
+  # session. That is exempted in the region-lock condition with
+  # kms:ViaService, not by opening kms:*. cloudfront-keyvaluestore is
+  # added since its data plane is global and the dev password gate writes
+  # to it.
   global_actions = [
     "a4b:*", "acm:*", "aws-marketplace-management:*", "aws-marketplace:*",
     "aws-portal:*", "budgets:*", "ce:*", "chime:*", "cloudfront:*",
@@ -56,8 +60,18 @@ locals {
         Effect    = "Deny"
         NotAction = local.global_actions
         Resource  = "*"
+        # Both keys live in one StringNotEquals so they are ANDed.
+        # break_glass_condition uses ArnNotLike, so merge cannot clobber
+        # this map. For a non-KMS request, kms:ViaService is absent and
+        # StringNotEquals is true, so the region lock still applies:
+        # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html
         Condition = merge(
-          { StringNotEquals = { "aws:RequestedRegion" = local.regions } },
+          {
+            StringNotEquals = {
+              "aws:RequestedRegion" = local.regions
+              "kms:ViaService"      = ["acm.us-east-1.amazonaws.com"]
+            }
+          },
           local.break_glass_condition,
         )
       }]
