@@ -5,7 +5,7 @@
 # The same image also runs db/logins/db-logins.sh (a different entrypoint in
 # the db-logins task definition), which needs psql.
 # TODO: pin by digest (flyway/flyway:13.11.1-alpine@sha256:...).
-FROM flyway/flyway:13.12.2-alpine
+FROM flyway/flyway:13.13.0-alpine
 
 ENV FLYWAY_LOCATIONS=filesystem:/flyway/sql \
     FLYWAY_CLEAN_DISABLED=true \
